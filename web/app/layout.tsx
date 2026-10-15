@@ -17,9 +17,9 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { NetworkStatusBanner } from '@/components/NetworkStatusBanner';
 import { API_URL } from '@/lib/api';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 
 // TODO: Move these from pages/_app.tsx during migration
-// import { ErrorBoundary } from '@/components/ErrorBoundary';
 // import { WalletProvider } from '@/context/WalletContext';
 // import '@/styles/globals.css';
 
@@ -36,15 +36,18 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        {/* TODO: Wrap with providers from pages/_app.tsx during migration:
-          <ErrorBoundary>
-            <WalletProvider>
-              {children}
-            </WalletProvider>
-          </ErrorBoundary>
-        */}
-        <NetworkStatusBanner apiUrl={API_URL} />
-        {children}
+        <ErrorBoundary
+          variant="root"
+          context={{
+            route: '/',
+            component: 'RootLayout',
+          }}
+          title="The app encountered a critical error"
+          description="The application crashed while rendering. You can retry or reload the page to recover."
+        >
+          <NetworkStatusBanner apiUrl={API_URL} />
+          {children}
+        </ErrorBoundary>
       </body>
     </html>
   );

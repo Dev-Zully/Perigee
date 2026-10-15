@@ -1,17 +1,41 @@
 import React from 'react';
-import { logger } from '../lib/logger';
+import { reportError, type ErrorBoundaryVariant, type ReportingContext } from '../lib/error-reporting';
 
 type ErrorBoundaryProps = {
-  children: React.ReactNode;
-  fallback?: (error: Error, reset: () => void) => React.ReactNode;
+  children?: React.ReactNode;
+  fallback?: (
+    error: Error,
+    reset: () => void,
+    context: ReportingContext,
+  ) => React.ReactNode;
   title?: string;
   description?: string;
+  context?: Partial<ReportingContext>;
+  variant?: ErrorBoundaryVariant;
+  resetKeys?: unknown[];
+  onReset?: () => void;
 };
 
 type ErrorBoundaryState = {
   error: Error | null;
   errorInfo: React.ErrorInfo | null;
 };
+
+const getCurrentRoute = (): string => {
+  if (typeof window === 'undefined') {
+    return '/';
+  }
+
+  return window.location.pathname || '/';
+};
+
+const resolveContext = (props: ErrorBoundaryProps): ReportingContext => ({
+  boundary: props.variant ?? 'component',
+  route: props.context?.route ?? getCurrentRoute(),
+  component: props.context?.component ?? 'UnknownComponent',
+  props: props.context?.props,
+  user: props.context?.user,
+});
 
 export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null, errorInfo: null };
@@ -22,34 +46,54 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     this.setState({ errorInfo });
-    logger.error('Unhandled UI error:', error, errorInfo);
+    reportError(error, resolveContext(this.props));
+  }
+
+  componentDidUpdate(prevProps: ErrorBoundaryProps) {
+    if (this.state.error && prevProps.resetKeys !== this.props.resetKeys) {
+      this.reset();
+    }
   }
 
   reset = () => {
     this.setState({ error: null, errorInfo: null });
+    this.props.onReset?.();
   };
 
   render() {
     if (this.state.error) {
+      const context = resolveContext(this.props);
+
       if (this.props.fallback) {
-        return this.props.fallback(this.state.error, this.reset);
+        return this.props.fallback(this.state.error, this.reset, context);
       }
 
+      const title =
+        this.props.title ??
+        (this.props.variant === 'root'
+          ? 'Something went wrong'
+          : this.props.variant === 'route'
+            ? 'This page failed to load'
+            : 'This widget failed to load');
+
+      const description =
+        this.props.description ??
+        (this.props.variant === 'root'
+          ? 'The app hit an unexpected issue. You can retry without losing the rest of your session.'
+          : this.props.variant === 'route'
+            ? 'This page hit an unexpected rendering error. Try again or reload the page to recover.'
+            : 'This section could not render correctly, but the rest of the dashboard is still available.');
+
       return (
-        <div className="flex min-h-[320px] items-center justify-center rounded-lg border border-red-900/60 bg-[#0d1117] p-6 text-red-100">
+        <div className="flex min-h-[260px] items-center justify-center rounded-lg border border-red-900/60 bg-[#0d1117] p-6 text-red-100">
           <div className="w-full max-w-xl rounded-lg border border-red-800/60 bg-red-950/30 p-6 shadow-xl shadow-black/20">
             <div className="flex items-start gap-4">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-red-700/70 bg-red-950 text-lg font-bold">
                 !
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="text-base font-semibold text-red-50">
-                  {this.props.title ?? 'Something went wrong'}
-                </h2>
-                <p className="mt-2 text-sm leading-6 text-red-100/80">
-                  {this.props.description ??
-                    'A dashboard component crashed while rendering. You can retry without losing the rest of the app.'}
-                </p>
+                <h2 className="text-base font-semibold text-red-50">{title}</h2>
+                <p className="mt-2 text-sm leading-6 text-red-100/80">{description}</p>
                 <p className="mt-3 rounded-md border border-red-900/70 bg-black/20 px-3 py-2 font-mono text-xs text-red-100/80">
                   {this.state.error.message || this.state.error.name}
                 </p>
@@ -71,10 +115,14 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
                   </button>
                   <button
                     type="button"
-                    onClick={() => window.location.reload()}
+                    onClick={() => {
+                      if (typeof window !== 'undefined') {
+                        window.location.reload();
+                      }
+                    }}
                     className="rounded-md border border-slate-700 px-4 py-2 text-sm font-medium text-slate-100 transition-colors hover:bg-slate-800"
                   >
-                    Reload dashboard
+                    Reload page
                   </button>
                 </div>
               </div>
@@ -84,6 +132,18 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
       );
     }
 
-    return this.props.children;
+    return this.props.children ?? null;
   }
 }
+
+export const RootErrorBoundary = (props: Omit<ErrorBoundaryProps, 'variant'>) => (
+  <ErrorBoundary variant="root" {...props} />
+);
+
+export const RouteErrorBoundary = (props: Omit<ErrorBoundaryProps, 'variant'>) => (
+  <ErrorBoundary variant="route" {...props} />
+);
+
+export const ComponentErrorBoundary = (props: Omit<ErrorBoundaryProps, 'variant'>) => (
+  <ErrorBoundary variant="component" {...props} />
+);
