@@ -20,6 +20,10 @@ import { FeatureFlagProvider } from "../features/feature-flags";
 // `prefers-reduced-motion` setting, in addition to the per-component
 // `useReducedMotion()` guards already in place.
 import { MotionProvider } from "../components/MotionProvider";
+// WEB (#700): locale/locale persistence. `next-intl` resolves the message
+// catalogue; `LocaleSync` owns the document-level `lang`/`dir` attributes,
+// which CSS logical properties and assistive technology both depend on.
+import { LocaleSync } from "../components/LocaleSync";
 // WEB-52 (#185): global command palette — ⌘K / Ctrl+K / `/` opens a searchable
 // launcher for navigation, vaults, settings and quick actions.
 import { CommandPaletteLauncher } from "../components/CommandPaletteLauncher";
@@ -63,34 +67,36 @@ export default function App({ Component, pageProps }: AppProps) {
   return (
     <div className={inter.className}>
       <MotionProvider>
-        <FeatureFlagProvider>
-          <NextIntlClientProvider
-            locale={router?.locale ?? "en"}
-            messages={pageProps.messages ?? defaultMessages}
-            timeZone="UTC"
-          >
-            <WalletProvider>
-              <ToastProvider>
-                {/* Network status and API availability (#109) */}
-                <NetworkStatusBanner apiUrl={API_URL} />
+        <LocaleSync>
+          <FeatureFlagProvider>
+            <NextIntlClientProvider
+              locale={router?.locale ?? "en"}
+              messages={pageProps.messages ?? defaultMessages}
+              timeZone="UTC"
+            >
+              <WalletProvider>
+                <ToastProvider>
+                  {/* Network status and API availability (#109) */}
+                  <NetworkStatusBanner apiUrl={API_URL} />
 
-                {/*
-                 * Graceful RPC fallback — shown when the backend is unreachable (#115).
-                 * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
-                 * stale-data badges on individual views.
-                 */}
-                <RpcFallbackBanner apiUrl={API_URL}>
-                  <ErrorBoundary>
-                    <Component {...pageProps} />
-                    <CommandPaletteLauncher />
-                    <Analytics />
-                    <ServiceWorkerManager />
-                  </ErrorBoundary>
-                </RpcFallbackBanner>
-              </ToastProvider>
-            </WalletProvider>
-          </NextIntlClientProvider>
-        </FeatureFlagProvider>
+                  {/*
+                   * Graceful RPC fallback — shown when the backend is unreachable (#115).
+                   * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
+                   * stale-data badges on individual views.
+                   */}
+                  <RpcFallbackBanner apiUrl={API_URL}>
+                    <ErrorBoundary>
+                      <Component {...pageProps} />
+                      <CommandPaletteLauncher />
+                      <Analytics />
+                      <ServiceWorkerManager />
+                    </ErrorBoundary>
+                  </RpcFallbackBanner>
+                </ToastProvider>
+              </WalletProvider>
+            </NextIntlClientProvider>
+          </FeatureFlagProvider>
+        </LocaleSync>
       </MotionProvider>
     </div>
   );
