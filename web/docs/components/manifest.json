@@ -89,7 +89,7 @@
       "exports": [
         {
           "name": "Badge",
-          "kind": "function",
+          "kind": "const",
           "element": "span",
           "propsType": "BadgeProps",
           "since": "0.1.0",
@@ -251,7 +251,7 @@
       "exports": [
         {
           "name": "Spinner",
-          "kind": "function",
+          "kind": "const",
           "element": "span",
           "propsType": "SpinnerProps",
           "since": "0.1.0",

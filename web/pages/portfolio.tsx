@@ -1,0 +1,408 @@
+import { useState, useMemo } from "react";
+import Head from "next/head";
+import Link from "next/link";
+import {
+  BarChart2,
+  TrendingUp,
+  TrendingDown,
+  Wallet,
+  Lock,
+  Archive,
+  Clock,
+  ArrowUpRight,
+} from "lucide-react";
+
+import { SEO } from "@/components/SEO";
+import { Vault, VaultStatus } from "@/types/vault";
+
+// ---------------------------------------------------------------------------
+// Demo data — replace with real API call once the endpoint is available
+// ---------------------------------------------------------------------------
+
+const MOCK_VAULTS: Vault[] = Array.from({ length: 12 }, (_, i) => ({
+  id: `vault-${i + 1}`,
+  name: `Vault ${i + 1}`,
+  owner: "GAXI...B7QK",
+  balance: Math.round(Math.random() * 500_000 + 1_000),
+  asset: ["XLM", "USDC", "BTC", "ETH"][i % 4],
+  apy: parseFloat((Math.random() * 18 + 1).toFixed(2)),
+  status: (["ACTIVE", "ACTIVE", "ACTIVE", "LOCKED", "PENDING", "ARCHIVED"] as VaultStatus[])[
+    i % 6
+  ],
+  createdAt: new Date(Date.now() - i * 86_400_000 * 10).toISOString(),
+  updatedAt: new Date().toISOString(),
+}));
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+type AssetBreakdown = { asset: string; balance: number; count: number };
+
+function getAssetBreakdown(vaults: Vault[]): AssetBreakdown[] {
+  const map = new Map<string, AssetBreakdown>();
+  for (const v of vaults) {
+    const existing = map.get(v.asset) ?? { asset: v.asset, balance: 0, count: 0 };
+    map.set(v.asset, {
+      asset: v.asset,
+      balance: existing.balance + v.balance,
+      count: existing.count + 1,
+    });
+  }
+  return Array.from(map.values()).sort((a, b) => b.balance - a.balance);
+}
+
+const STATUS_META: Record<
+  VaultStatus,
+  { label: string; color: string; icon: React.ReactNode }
+> = {
+  ACTIVE: {
+    label: "Active",
+    color: "text-emerald-400 bg-emerald-950 border-emerald-800",
+    icon: <TrendingUp size={12} />,
+  },
+  LOCKED: {
+    label: "Locked",
+    color: "text-amber-400 bg-amber-950 border-amber-800",
+    icon: <Lock size={12} />,
+  },
+  PENDING: {
+    label: "Pending",
+    color: "text-sky-400 bg-sky-950 border-sky-800",
+    icon: <Clock size={12} />,
+  },
+  ARCHIVED: {
+    label: "Archived",
+    color: "text-slate-400 bg-slate-800 border-slate-700",
+    icon: <Archive size={12} />,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function StatCard({
+  label,
+  value,
+  sub,
+  icon,
+  trend,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  icon: React.ReactNode;
+  trend?: "up" | "down" | "neutral";
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-5 backdrop-blur">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-slate-400">{label}</p>
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800 text-slate-400">
+          {icon}
+        </span>
+      </div>
+      <p className="mt-3 text-2xl font-bold text-white">{value}</p>
+      {sub && (
+        <p
+          className={`mt-1 flex items-center gap-1 text-xs ${
+            trend === "up"
+              ? "text-emerald-400"
+              : trend === "down"
+              ? "text-red-400"
+              : "text-slate-500"
+          }`}
+        >
+          {trend === "up" && <TrendingUp size={11} />}
+          {trend === "down" && <TrendingDown size={11} />}
+          {sub}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function AssetBar({
+  breakdown,
+  total,
+}: {
+  breakdown: AssetBreakdown[];
+  total: number;
+}) {
+  const COLORS = [
+    "bg-sky-500",
+    "bg-violet-500",
+    "bg-amber-500",
+    "bg-emerald-500",
+    "bg-rose-500",
+  ];
+
+  return (
+    <div>
+      {/* Stacked bar */}
+      <div className="flex h-3 w-full overflow-hidden rounded-full">
+        {breakdown.map((item, i) => (
+          <div
+            key={item.asset}
+            className={`${COLORS[i % COLORS.length]} transition-all`}
+            style={{ width: `${(item.balance / total) * 100}%` }}
+            title={`${item.asset}: ${((item.balance / total) * 100).toFixed(1)}%`}
+          />
+        ))}
+      </div>
+
+      {/* Legend */}
+      <ul className="mt-4 space-y-2">
+        {breakdown.map((item, i) => (
+          <li key={item.asset} className="flex items-center justify-between text-sm">
+            <span className="flex items-center gap-2">
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${COLORS[i % COLORS.length]}`}
+              />
+              <span className="text-slate-300">{item.asset}</span>
+              <span className="text-xs text-slate-500">({item.count} vault{item.count !== 1 ? "s" : ""})</span>
+            </span>
+            <span className="font-medium text-slate-200">
+              {item.balance.toLocaleString()}{" "}
+              <span className="text-xs text-slate-500">
+                ({((item.balance / total) * 100).toFixed(1)}%)
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function StatusBreakdown({ vaults }: { vaults: Vault[] }) {
+  const counts = useMemo(() => {
+    const m: Partial<Record<VaultStatus, number>> = {};
+    for (const v of vaults) m[v.status] = (m[v.status] ?? 0) + 1;
+    return m;
+  }, [vaults]);
+
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {(Object.keys(STATUS_META) as VaultStatus[]).map((s) => {
+        const meta = STATUS_META[s];
+        const count = counts[s] ?? 0;
+        return (
+          <div
+            key={s}
+            className={`flex items-center gap-2.5 rounded-lg border px-3 py-2.5 ${meta.color}`}
+          >
+            {meta.icon}
+            <span className="text-sm font-medium">{meta.label}</span>
+            <span className="ml-auto text-lg font-bold">{count}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TopVaultRow({ vault }: { vault: Vault }) {
+  return (
+    <Link
+      href={`/vault/${vault.id}`}
+      className="
+        flex
+        items-center
+        justify-between
+        rounded-lg
+        border
+        border-slate-800
+        bg-slate-900/40
+        px-4
+        py-3
+        transition-colors
+        hover:border-slate-700
+        hover:bg-slate-800/60
+      "
+    >
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium text-slate-200">{vault.name}</p>
+        <p className="mt-0.5 text-xs text-slate-500">{vault.asset}</p>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <div className="text-right">
+          <p className="text-sm font-semibold text-white">
+            {vault.balance.toLocaleString()}
+          </p>
+          <p className="text-xs text-emerald-400">{vault.apy}% APY</p>
+        </div>
+        <ArrowUpRight size={14} className="text-slate-500" />
+      </div>
+    </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
+/**
+ * Portfolio Overview page.
+ *
+ * Shows:
+ * - Total balance, vault count, average APY, best-performing vault
+ * - Asset allocation breakdown (stacked bar + legend)
+ * - Status breakdown (Active / Locked / Pending / Archived)
+ * - Top 5 vaults by balance
+ *
+ * Resolves #683 — Build portfolio overview.
+ */
+export default function PortfolioOverviewPage() {
+  // In production wire this to a real data-fetching hook / SWR call.
+  const [vaults] = useState<Vault[]>(MOCK_VAULTS);
+
+  const totalBalance = useMemo(
+    () => vaults.reduce((s, v) => s + v.balance, 0),
+    [vaults],
+  );
+
+  const avgApy = useMemo(() => {
+    const active = vaults.filter((v) => v.apy !== undefined);
+    if (active.length === 0) return 0;
+    return active.reduce((s, v) => s + (v.apy ?? 0), 0) / active.length;
+  }, [vaults]);
+
+  const topVaults = useMemo(
+    () => [...vaults].sort((a, b) => b.balance - a.balance).slice(0, 5),
+    [vaults],
+  );
+
+  const assetBreakdown = useMemo(() => getAssetBreakdown(vaults), [vaults]);
+
+  return (
+    <>
+      <Head>
+        <link rel="icon" href="/favicon.ico" />
+      </Head>
+      <SEO
+        title="Portfolio Overview"
+        description="View your vault portfolio breakdown — balances, assets, APY, and status."
+        path="/portfolio"
+      />
+
+      <main className="min-h-screen bg-slate-950 text-slate-100">
+        {/* Header */}
+        <header className="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/90 backdrop-blur">
+          <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+            <div>
+              <Link href="/" className="text-2xl font-bold text-cyan-400 hover:text-cyan-300">
+                Perigee
+              </Link>
+              <span className="ml-3 text-xs uppercase tracking-wider text-slate-500">
+                Portfolio Overview
+              </span>
+            </div>
+            <Link
+              href="/"
+              className="text-sm font-medium text-slate-400 hover:text-cyan-400 transition-colors"
+            >
+              &larr; Dashboard
+            </Link>
+          </div>
+        </header>
+
+        <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+          {/* Page title */}
+          <div className="mb-8">
+            <h1 className="flex items-center gap-3 text-3xl font-bold text-white">
+              <BarChart2 className="text-cyan-400" size={28} />
+              Portfolio Overview
+            </h1>
+            <p className="mt-1 text-sm text-slate-400">
+              All vaults &mdash; balances, allocations, and performance at a glance.
+            </p>
+          </div>
+
+          {/* KPI cards */}
+          <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              label="Total Balance"
+              value={totalBalance.toLocaleString()}
+              sub="Across all assets"
+              icon={<Wallet size={16} />}
+              trend="neutral"
+            />
+            <StatCard
+              label="Total Vaults"
+              value={String(vaults.length)}
+              sub={`${vaults.filter((v) => v.status === "ACTIVE").length} active`}
+              icon={<BarChart2 size={16} />}
+              trend="up"
+            />
+            <StatCard
+              label="Average APY"
+              value={`${avgApy.toFixed(2)}%`}
+              sub="Across active vaults"
+              icon={<TrendingUp size={16} />}
+              trend="up"
+            />
+            <StatCard
+              label="Best APY"
+              value={`${Math.max(...vaults.map((v) => v.apy ?? 0)).toFixed(2)}%`}
+              sub={topVaults[0]?.name ?? "—"}
+              icon={<TrendingUp size={16} />}
+              trend="up"
+            />
+          </div>
+
+          {/* Two-column layout */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {/* Asset allocation */}
+            <section
+              aria-labelledby="allocation-heading"
+              className="rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+            >
+              <h2
+                id="allocation-heading"
+                className="mb-4 text-base font-semibold text-white"
+              >
+                Asset Allocation
+              </h2>
+              <AssetBar breakdown={assetBreakdown} total={totalBalance} />
+            </section>
+
+            {/* Vault status */}
+            <section
+              aria-labelledby="status-heading"
+              className="rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+            >
+              <h2
+                id="status-heading"
+                className="mb-4 text-base font-semibold text-white"
+              >
+                Vault Status
+              </h2>
+              <StatusBreakdown vaults={vaults} />
+            </section>
+          </div>
+
+          {/* Top vaults */}
+          <section
+            aria-labelledby="top-vaults-heading"
+            className="mt-6 rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+          >
+            <h2
+              id="top-vaults-heading"
+              className="mb-4 text-base font-semibold text-white"
+            >
+              Top Vaults by Balance
+            </h2>
+            <div className="space-y-2">
+              {topVaults.map((vault) => (
+                <TopVaultRow key={vault.id} vault={vault} />
+              ))}
+            </div>
+          </section>
+        </div>
+      </main>
+    </>
+  );
+}

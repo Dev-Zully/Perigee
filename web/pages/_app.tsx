@@ -65,12 +65,13 @@ export default function App({ Component, pageProps }: AppProps) {
         <FeatureFlagProvider>
           <NextIntlClientProvider
             locale={router?.locale ?? "en"}
-            messages={pageProps.messages ?? {}}
+            messages={pageProps.messages ?? defaultMessages}
             timeZone="UTC"
           >
             <WalletProvider>
               {/* Network status and API availability (#109) */}
               <NetworkStatusBanner apiUrl={API_URL} />
+
               {/*
                * Graceful RPC fallback — shown when the backend is unreachable (#115).
                * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
@@ -79,6 +80,7 @@ export default function App({ Component, pageProps }: AppProps) {
               <RpcFallbackBanner apiUrl={API_URL}>
                 <ErrorBoundary>
                   <Component {...pageProps} />
+                  <CommandPaletteLauncher />
                   <Analytics />
                   <ServiceWorkerManager />
                 </ErrorBoundary>
@@ -87,30 +89,6 @@ export default function App({ Component, pageProps }: AppProps) {
           </NextIntlClientProvider>
         </FeatureFlagProvider>
       </MotionProvider>
-      <FeatureFlagProvider>
-        <NextIntlClientProvider
-          locale={router?.locale ?? "en"}
-          messages={pageProps.messages ?? defaultMessages}
-          timeZone="UTC"
-        >
-          <WalletProvider>
-            {/* Network status and API availability (#109) */}
-            <NetworkStatusBanner apiUrl={API_URL} />
-            {/*
-             * Graceful RPC fallback — shown when the backend is unreachable (#115).
-             * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
-             * stale-data badges on individual views.
-             */}
-            <RpcFallbackBanner apiUrl={API_URL}>
-              <ErrorBoundary>
-                <Component {...pageProps} />
-                <CommandPaletteLauncher />
-                <Analytics />
-              </ErrorBoundary>
-            </RpcFallbackBanner>
-          </WalletProvider>
-        </NextIntlClientProvider>
-      </FeatureFlagProvider>
     </div>
   );
 }

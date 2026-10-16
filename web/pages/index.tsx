@@ -1,4 +1,5 @@
 import Head from "next/head";
+import dynamic from "next/dynamic";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useTranslations } from "next-intl";
 
@@ -7,9 +8,27 @@ import { ContractInteraction } from "../components/ContractInteraction";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { FunctionSidebar } from "../components/FunctionSidebar";
 import { LiveAlert, LiveStatus } from "../components/LiveRegion";
-import { ResultViewer } from "../components/Resultviewer";
 import { SEO } from "../components/SEO";
 import { UploadZone } from "../components/upload-zone";
+
+/**
+ * Lazy-load ResultViewer — it pulls in `mermaid` (~1.5 MB) which is only
+ * needed after the user has triggered an analysis. Loading it dynamically
+ * keeps it out of the initial JS bundle.
+ *
+ * Resolves #686 — Optimize bundle size.
+ */
+const ResultViewer = dynamic(
+  () => import("../components/Resultviewer").then((m) => ({ default: m.ResultViewer })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-32 items-center justify-center text-sm text-slate-500">
+        Loading result viewer…
+      </div>
+    ),
+  },
+);
 import { analyzeService } from "../lib/api";
 import { trackTelemetryEvent } from "../lib/telemetry";
 import { contractIds } from "../lib/contracts.config";

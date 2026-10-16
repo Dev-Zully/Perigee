@@ -72,8 +72,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   // Remember what had focus before opening so we can restore it on close.
   useEffect(() => {
     if (open) {
-      restoreFocusRef.current =
-        document.activeElement as HTMLElement | null;
+      restoreFocusRef.current = document.activeElement as HTMLElement | null;
       setQuery("");
     } else if (restoreFocusRef.current) {
       restoreFocusRef.current.focus?.();
@@ -125,12 +124,12 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           return "";
       }
     },
-    [t]
+    [t],
   );
 
   const staticEntries = useMemo<CommandEntry[]>(
     () => [...NAVIGATION_COMMANDS, ...SETTINGS_COMMANDS, ...ACTION_COMMANDS],
-    []
+    [],
   );
 
   const handleRunAction = useCallback(
@@ -145,9 +144,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
               /* clipboard unavailable — non-fatal */
             });
         }
+      } else if (actionId === "create-vault") {
+        router.push("/vaults/new");
       }
     },
-    [wallet.address]
+    [wallet.address, router],
   );
 
   // ---------------------------------------------------------------------------
@@ -156,7 +157,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
   const filtered = useMemo(
     () => filterCommands(staticEntries, query, resolveLabel),
-    [staticEntries, query, resolveLabel]
+    [staticEntries, query, resolveLabel],
   );
 
   const grouped = useMemo(() => groupCommands(filtered), [filtered]);
@@ -164,7 +165,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const handleSelect = useCallback(
     (entry: CommandEntry) => {
       onOpenChange(false);
-      trackTelemetryEvent({ name: "palette_navigate", properties: { id: entry.id } });
+      trackTelemetryEvent({
+        name: "palette_navigate",
+        properties: { id: entry.id },
+      });
       if (entry.kind === "action") {
         handleRunAction(entry.actionId);
         return;
@@ -174,7 +178,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         router.push(entry.route);
       }
     },
-    [handleRunAction, onOpenChange, router]
+    [handleRunAction, onOpenChange, router],
   );
 
   return (
@@ -246,10 +250,15 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                     onSelect={() => handleSelect(entry)}
                     className="flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-sm data-[selected=true]:bg-slate-800 data-[selected=true]:text-white"
                   >
-                    <Icon className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                    <Icon
+                      className="h-4 w-4 text-slate-500"
+                      aria-hidden="true"
+                    />
                     <span className="flex-1">{resolveLabel(entry)}</span>
                     {entry.kind === "vault" && (
-                      <span className="text-xs text-slate-500">{entry.vaultId}</span>
+                      <span className="text-xs text-slate-500">
+                        {entry.vaultId}
+                      </span>
                     )}
                   </Command.Item>
                 ))}
