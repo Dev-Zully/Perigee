@@ -18,6 +18,14 @@ members = [
     "contracts/vault_insurance",
     # On-chain vault metadata and trait discovery (#639).
     "contracts/vault_metadata",
+    # Deterministic vault factory + UUPS proxy (#632, #635).
+    "contracts/vault_factory",
+    # Pluggable yield strategies, rotation, performance fees (#633).
+    "contracts/vault_strategy",
+    # Circuit breaker, partial pause, timelocked unpause (#634).
+    "contracts/vault_guard",
+    # ERC-4626 tokenised vault (#631).
+    "contracts/erc4626_vault",
 ]
 
 # CONTRACT-41 (#535): dedicated build profile used by `scripts/coverage.sh`
