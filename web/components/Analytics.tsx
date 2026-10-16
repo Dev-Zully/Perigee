@@ -13,6 +13,7 @@
 import dynamic from "next/dynamic";
 import { Suspense, useEffect } from "react";
 import { measureHydration } from "../lib/hydrationMetrics";
+import { useAnalyticsRouteTracker } from "../hooks/useAnalyticsRouteTracker";
 
 const AnalyticsBanner = dynamic(
   () => import("./AnalyticsBanner").then((mod) => mod.AnalyticsBanner),
@@ -20,6 +21,8 @@ const AnalyticsBanner = dynamic(
 );
 
 export function Analytics() {
+  useAnalyticsRouteTracker();
+
   useEffect(() => {
     measureHydration();
   }, []);

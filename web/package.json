@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "^1.9.5",
-    "@tanstack/react-virtual": "^3.14.20",
     "@types/dompurify": "^3.2.0",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
