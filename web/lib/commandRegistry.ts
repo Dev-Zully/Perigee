@@ -45,8 +45,9 @@ export interface SettingsCommand {
 export interface ActionCommand {
   kind: "action";
   id: string;
-  /** `actionId` is passed back to the palette's `onRunAction` callback. */
-  actionId: "copy-wallet-address";
+  /** `actionId` is passed back to the palette's `onRunAction` callback. */ actionId:
+    | "copy-wallet-address"
+    | "create-vault";
   labelKey: string;
   keywords: string[];
 }
@@ -76,9 +77,23 @@ export const NAVIGATION_COMMANDS: NavigationCommand[] = [
     labelKey: "palette.goVaults",
     keywords: ["vaults", "portfolio", "funds", "positions", "list"],
   },
+  {
+    kind: "navigation",
+    id: "nav-portfolio",
+    route: "/portfolio",
+    labelKey: "palette.goPortfolio",
+    keywords: ["assets", "balance", "holdings", "overview", "portfolio"],
+  },
 ];
 
 export const SETTINGS_COMMANDS: SettingsCommand[] = [
+  {
+    kind: "settings",
+    id: "settings-app",
+    route: "/settings",
+    labelKey: "palette.goSettings",
+    keywords: ["preferences", "config", "options", "settings"],
+  },
   {
     kind: "settings",
     id: "settings-admin-managers",
@@ -147,18 +162,23 @@ export interface VaultRegistryItem {
  * `ids` only (no names) still produces commands — the palette can render
  * the raw id — while `name` improves search and display.
  */
-export function buildVaultCommands(vaults: VaultRegistryItem[]): VaultCommand[] {
+export function buildVaultCommands(
+  vaults: VaultRegistryItem[],
+): VaultCommand[] {
   return vaults
     .filter((v) => v && typeof v.id === "string" && v.id.trim().length > 0)
     .map((v) => ({
       kind: "vault" as const,
       id: `vault-${v.id}`,
       route: `/vault/${encodeURIComponent(v.id)}`,
-      label: typeof v.name === "string" && v.name.trim() ? v.name : `Vault ${v.id}`,
+      label:
+        typeof v.name === "string" && v.name.trim() ? v.name : `Vault ${v.id}`,
       vaultId: v.id,
-      keywords: ["vault", v.id, typeof v.name === "string" ? v.name : ""].filter(
-        Boolean,
-      ),
+      keywords: [
+        "vault",
+        v.id,
+        typeof v.name === "string" ? v.name : "",
+      ].filter(Boolean),
     }));
 }
 
@@ -173,6 +193,13 @@ export const ACTION_COMMANDS: ActionCommand[] = [
     actionId: "copy-wallet-address",
     labelKey: "palette.copyWalletAddress",
     keywords: ["copy", "wallet", "address", "clipboard", "account", "key"],
+  },
+  {
+    kind: "action",
+    id: "action-create-vault",
+    actionId: "create-vault",
+    labelKey: "palette.createVault",
+    keywords: ["new", "add", "create", "vault", "start"],
   },
 ];
 
@@ -189,7 +216,7 @@ export const ACTION_COMMANDS: ActionCommand[] = [
 export function commandMatches(
   entry: CommandEntry,
   query: string,
-  resolveLabel: (entry: CommandEntry) => string
+  resolveLabel: (entry: CommandEntry) => string,
 ): boolean {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return true;
@@ -215,7 +242,7 @@ export function commandMatches(
 export function filterCommands(
   entries: CommandEntry[],
   query: string,
-  resolveLabel: (entry: CommandEntry) => string
+  resolveLabel: (entry: CommandEntry) => string,
 ): CommandEntry[] {
   const q = query.trim().toLowerCase();
   if (!q) return entries;
@@ -248,7 +275,7 @@ const KIND_TO_GROUP: Record<CommandEntry["kind"], CommandGroup> = {
  * `cmdk` groups predictably.
  */
 export function groupCommands(
-  entries: CommandEntry[]
+  entries: CommandEntry[],
 ): Array<{ group: CommandGroup; entries: CommandEntry[] }> {
   const buckets = new Map<CommandGroup, CommandEntry[]>();
   for (const entry of entries) {

@@ -19,11 +19,11 @@ interface BadgeProps {
 
 const variantClasses: Record<BadgeVariant, string> = {
   // Pairings audited for ≥ 4.5:1 on their tinted dark surfaces (WEB-38 / #492).
-  default: "bg-slate-700 text-slate-200",           // slate-200 on slate-700 ≈ 8.5:1
-  success: "bg-emerald-950 text-emerald-300",       // emerald-300 on emerald-950 ≈ 7+:1
-  warning: "bg-amber-950 text-amber-300",           // amber-300 on amber-950 ≈ 8+:1
-  danger:  "bg-rose-950 text-rose-300",             // rose-300 on rose-950 ≈ 6+:1
-  info:    "bg-sky-950 text-sky-300",               // sky-300 on sky-950 ≈ 7+:1
+  default: "bg-slate-700 text-slate-200", // slate-200 on slate-700 ≈ 8.5:1
+  success: "bg-emerald-950 text-emerald-300", // emerald-300 on emerald-950 ≈ 7+:1
+  warning: "bg-amber-950 text-amber-300", // amber-300 on amber-950 ≈ 8+:1
+  danger: "bg-rose-950 text-rose-300", // rose-300 on rose-950 ≈ 6+:1
+  info: "bg-sky-950 text-sky-300", // sky-300 on sky-950 ≈ 7+:1
 };
 
 /**
@@ -46,7 +46,11 @@ const variantClasses: Record<BadgeVariant, string> = {
  *
  * @since 0.1.0
  */
-function BadgeImpl({ variant = "default", children, className }: BadgeProps) {
+export const Badge = React.memo(function Badge({
+  variant = "default",
+  children,
+  className,
+}: BadgeProps) {
   return (
     <span
       className={cn(
@@ -58,7 +62,4 @@ function BadgeImpl({ variant = "default", children, className }: BadgeProps) {
       {children}
     </span>
   );
-}
-
-/** Memoised (#692): re-renders only when props change. */
-export const Badge = React.memo(BadgeImpl);
+});

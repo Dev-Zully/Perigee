@@ -1,4 +1,4 @@
-// commitlint.config.js
+// commitlint.config.mjs
 // Enforces Conventional Commits (https://www.conventionalcommits.org)
 // Used by the commit-msg husky hook and the CI lint-commits workflow.
 
