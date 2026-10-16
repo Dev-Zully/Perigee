@@ -10,6 +10,14 @@ members = [
     "contracts/staking_rewards",
     "contracts/oracle_aggregator",
     "contracts/policy_vault",
+    # Share-price manipulation resistance, rounding, dust (#636).
+    "contracts/vault_accounting",
+    # Multi-asset baskets with composite pricing (#637).
+    "contracts/basket_vault",
+    # Vault insurance coverage, claims, premiums (#638).
+    "contracts/vault_insurance",
+    # On-chain vault metadata and trait discovery (#639).
+    "contracts/vault_metadata",
     # Deterministic vault factory + UUPS proxy (#632, #635).
     "contracts/vault_factory",
     # Pluggable yield strategies, rotation, performance fees (#633).
