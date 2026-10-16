@@ -285,6 +285,7 @@
 
   "a11y.statusRegionLabel": "Status updates",
   "a11y.languageSwitcher": "Language",
+  "a11y.highContrast": "High contrast",
   "a11y.analysisRunning": "Analysis running",
   "a11y.analysisComplete": "Analysis complete",
   "a11y.analysisFailed": "Analysis failed",

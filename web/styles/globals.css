@@ -6,6 +6,10 @@
    `:root` custom-properties are in scope before Tailwind's `base` layer. */
 @import "./variables.css";
 
+/* High-contrast support: Windows HCM (`forced-colors`) plus the manual
+   data-contrast="high" toggle. Issue #701. */
+@import "./high-contrast.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
