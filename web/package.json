@@ -8,7 +8,6 @@
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx,.js,.jsx",
     "typecheck": "tsc --noEmit",
-    "test": "node --test ./__tests__/**/*.test.cjs ./lib/**/*.test.cjs ./components/**/*.test.cjs"
     "test": "node --test ./__tests__/**/*.test.cjs ./lib/**/*.test.cjs ./components/**/*.test.cjs",
     "docs:build": "node scripts/docs/generate.mjs",
     "docs:check": "node scripts/docs/generate.mjs --check",
@@ -17,9 +16,9 @@
   },
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "^1.9.5",
-    "cmdk": "^1.1.1",
     "@types/dompurify": "^3.2.0",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "dompurify": "^3.4.12",
     "framer-motion": "^12.26.2",
     "helmet": "^8.0.0",

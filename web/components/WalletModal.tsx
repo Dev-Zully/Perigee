@@ -7,7 +7,7 @@ import { Wallet, Check, AlertCircle } from "lucide-react";
 import React from "react";
 import UserIcon from "./userIcon";
 import { logger } from "../lib/logger";
-import { trackTelemetryEvent } from "../lib/telemetry";
+import { trackTelemetryEvent, trackFunnelEvent } from "../lib/telemetry";
 import { useTranslations } from "next-intl";
 import { Spinner } from "./ui/Spinner";
 import { blurDataUri } from "../lib/imagePlaceholder";
@@ -26,9 +26,12 @@ export function WalletModal() {
     null,
   );
 
-  // Reset selection when modal opens
+  // Reset selection and track funnel initiated when modal opens
   React.useEffect(() => {
-    if (isModalOpen) setActiveSelection(null);
+    if (isModalOpen) {
+      setActiveSelection(null);
+      trackFunnelEvent("wallet_connect_initiated");
+    }
   }, [isModalOpen]);
 
   const handleConnectClick = async () => {
@@ -42,6 +45,10 @@ export function WalletModal() {
       } catch (err) {
         // Error is handled in context
         logger.error("Connection error:", err);
+        trackFunnelEvent("wallet_error", {
+          wallet_id: activeSelection,
+          error_type: "connection_failed",
+        });
       }
     }
   };
