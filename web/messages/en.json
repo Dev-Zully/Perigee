@@ -293,5 +293,8 @@
   "a11y.uploadRejected": "File rejected",
   "serviceWorker.updateAvailable": "A new version of Perigee is available.",
   "serviceWorker.reload": "Reload",
-  "serviceWorker.queued": "You are offline. Your changes will be sent when the connection returns."
+  "serviceWorker.queued": "You are offline. Your changes will be sent when the connection returns.",
+
+  "toast.dismiss": "Dismiss notification",
+  "toast.regionLabel": "Notifications"
 }
