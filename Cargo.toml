@@ -10,6 +10,12 @@ members = [
     "contracts/staking_rewards",
     "contracts/oracle_aggregator",
     "contracts/policy_vault",
+    # Deterministic vault factory + UUPS proxy (#632, #635).
+    "contracts/vault_factory",
+    # Pluggable yield strategies, rotation, performance fees (#633).
+    "contracts/vault_strategy",
+    # Circuit breaker, partial pause, timelocked unpause (#634).
+    "contracts/vault_guard",
     # ERC-4626 tokenised vault (#631).
     "contracts/erc4626_vault",
 ]
