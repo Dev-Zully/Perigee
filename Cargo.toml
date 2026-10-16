@@ -10,6 +10,8 @@ members = [
     "contracts/staking_rewards",
     "contracts/oracle_aggregator",
     "contracts/policy_vault",
+    # ERC-4626 tokenised vault (#631).
+    "contracts/erc4626_vault",
 ]
 
 # CONTRACT-41 (#535): dedicated build profile used by `scripts/coverage.sh`
