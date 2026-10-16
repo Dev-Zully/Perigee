@@ -28,6 +28,8 @@ import { MotionProvider } from '../components/MotionProvider';
 // (pages/ router is active), but keeping the launcher mounted here means the
 // palette survives the migration without a second wiring pass.
 import { CommandPaletteLauncher } from '../components/CommandPaletteLauncher';
+import { SkipLink } from '../components/common/SkipLink/SkipLink';
+import { AnnouncerProvider } from '../components/AnnouncerProvider';
 
 // WEB-54 (#187): self-host the Inter typeface through `next/font` instead of
 // loading it from an external stylesheet. Fonts are downloaded and preloaded
@@ -55,9 +57,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <ErrorBoundary>
           <MotionProvider>
             <WalletProvider>
-              <CommandPaletteLauncher />
-              <NetworkStatusBanner apiUrl={API_URL} />
-              {children}
+              <AnnouncerProvider>
+                <SkipLink />
+                <CommandPaletteLauncher />
+                <NetworkStatusBanner apiUrl={API_URL} />
+                <main id="main-content" tabIndex={-1}>
+                  {children}
+                </main>
+              </AnnouncerProvider>
             </WalletProvider>
           </MotionProvider>
         </ErrorBoundary>

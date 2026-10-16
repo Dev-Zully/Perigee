@@ -28,7 +28,9 @@
 
   /* slate-500 — 4.76:1 on white (UI non-text ≥ 3:1; was #e2e8f0 @ 1.23:1 ✗) */
   --color-border: #64748b;
-  --color-border-subtle: #94a3b8;
+  /* Was #94a3b8 — 2.56:1 on white, below the 3:1 non-text minimum.
+     gray-500 is 4.83:1 and still reads as a lighter divider. (#696) */
+  --color-border-subtle: #6b7280;
 
   --color-text: #0f172a;       /* 17.85:1 on white ✓ */
   --color-text-muted: #475569; /* 7.58:1 on white (was #64748b @ 4.76:1) */
@@ -65,6 +67,21 @@
   /* ==========================================
      Transition
      ========================================== */
+
+  /* ==========================================
+     Focus ring — WCAG 2.4.7 Focus Visible (#696)
+
+     The app shipped no :focus-visible styling at all, so keyboard users had
+     no indication of where they were. A single 2px ring token keeps the
+     indicator consistent and gives the high-contrast work (#701) one place
+     to override. The dark-surface ring is the on-dark counterpart, selected
+     by [data-theme="dark"].
+     ========================================== */
+
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+  --focus-ring-color: #1d4ed8;      /* 8.2:1 on --color-background */
+  --focus-ring-color-dark: #93c5fd; /* 7.1:1 on slate-950 */
 
   --transition-fast: .15s ease;
 
