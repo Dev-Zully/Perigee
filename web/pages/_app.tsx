@@ -3,6 +3,7 @@ import "../styles/globals.css";
 import "../styles/print.css";
 import { Inter } from "next/font/google";
 import { WalletProvider } from "../context/WalletContext";
+import { ToastProvider } from "../context/ToastContext";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { Analytics } from "../components/Analytics";
 import { ServiceWorkerManager } from "../components/ServiceWorkerManager";
@@ -69,22 +70,24 @@ export default function App({ Component, pageProps }: AppProps) {
             timeZone="UTC"
           >
             <WalletProvider>
-              {/* Network status and API availability (#109) */}
-              <NetworkStatusBanner apiUrl={API_URL} />
+              <ToastProvider>
+                {/* Network status and API availability (#109) */}
+                <NetworkStatusBanner apiUrl={API_URL} />
 
-              {/*
-               * Graceful RPC fallback — shown when the backend is unreachable (#115).
-               * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
-               * stale-data badges on individual views.
-               */}
-              <RpcFallbackBanner apiUrl={API_URL}>
-                <ErrorBoundary>
-                  <Component {...pageProps} />
-                  <CommandPaletteLauncher />
-                  <Analytics />
-                  <ServiceWorkerManager />
-                </ErrorBoundary>
-              </RpcFallbackBanner>
+                {/*
+                 * Graceful RPC fallback — shown when the backend is unreachable (#115).
+                 * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
+                 * stale-data badges on individual views.
+                 */}
+                <RpcFallbackBanner apiUrl={API_URL}>
+                  <ErrorBoundary>
+                    <Component {...pageProps} />
+                    <CommandPaletteLauncher />
+                    <Analytics />
+                    <ServiceWorkerManager />
+                  </ErrorBoundary>
+                </RpcFallbackBanner>
+              </ToastProvider>
             </WalletProvider>
           </NextIntlClientProvider>
         </FeatureFlagProvider>
