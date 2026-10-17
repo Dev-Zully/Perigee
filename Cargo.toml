@@ -26,6 +26,10 @@ members = [
     "contracts/vault_guard",
     # ERC-4626 tokenised vault (#631).
     "contracts/erc4626_vault",
+    # Strategy risk framework and performance tracking (#657, #658).
+    "contracts/strategy_analytics",
+    # Strategy rotation and cross-chain yield (#659, #656).
+    "contracts/strategy_orchestration",
 ]
 
 # CONTRACT-41 (#535): dedicated build profile used by `scripts/coverage.sh`
