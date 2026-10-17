@@ -30,6 +30,10 @@ members = [
     "contracts/strategy_composability",
     # Performance fees, management fees and fee discount tokens (#661, #662, #663).
     "contracts/fee_engine",
+    # Strategy risk framework and performance tracking (#657, #658).
+    "contracts/strategy_analytics",
+    # Strategy rotation and cross-chain yield (#659, #656).
+    "contracts/strategy_orchestration",
 ]
 
 # CONTRACT-41 (#535): dedicated build profile used by `scripts/coverage.sh`
