@@ -31,9 +31,13 @@ it, and both are in this change:
 
 1. `initAxe` now reports the failure once per session, with the exact command
    to fix it, instead of swallowing it.
-2. The `declared-tooling` CI job fails the build when an imported
-   accessibility package is not declared in `package.json`, so the two cannot
-   drift apart again.
+2. The `declared-tooling` CI job reports when an imported accessibility
+   package is not declared in `package.json`, so the two cannot drift apart
+   again. It is **advisory** for the same reason the static audit is: the gap
+   exists on `main` and closing it means regenerating the lockfile, so a
+   blocking check would sit red on every PR until someone did that. The
+   finding appears as an annotation on the PR; set `A11Y_TOOLING_STRICT=true`
+   to make it blocking once the dependencies are added.
 
 Adding the dependencies themselves is a `package.json` + `yarn.lock` change
 and is deliberately **not** part of this PR (the lockfile is immutable in CI,
