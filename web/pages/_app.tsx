@@ -48,23 +48,48 @@ const inter = Inter({
  *
  * The import is dynamic so axe-core is never bundled into production builds.
  * Resolves WEB-24 (#110): missing accessibility audit tooling.
+ *
+ * Issue #705: **`@axe-core/react` is not in package.json or yarn.lock.** The
+ * `import()` below therefore rejects on every dev boot, and the `.catch`
+ * swallowed it — so the integration was silently dead code and looked like
+ * working tooling. That is worse than having none: it made the codebase appear
+ * to have automated a11y coverage that did not exist.
+ *
+ * The failure is now reported instead of ignored, once per session. The
+ * dependency itself is a package.json + yarn.lock change, which is out of
+ * scope here; `yarn add -D @axe-core/react` is the fix, and the
+ * `declared-tooling` job in .github/workflows/a11y-audit.yml fails the build
+ * if the import and the manifest disagree again.
  */
+let axeWarningShown = false;
+
 async function initAxe() {
-  if (typeof window !== "undefined" && process.env.NODE_ENV === "development") {
+  if (typeof window === "undefined" || process.env.NODE_ENV !== "development") return;
+
+  try {
     const axe = await import("@axe-core/react");
     const React = await import("react");
     const ReactDOM = await import("react-dom");
     // 1000 ms debounce — avoids flooding the console on rapid re-renders
     await axe.default(React.default, ReactDOM.default, 1000);
+  } catch (error) {
+    if (axeWarningShown) return;
+    axeWarningShown = true;
+    console.warn(
+      "[a11y] @axe-core/react is not installed, so the browser console audit " +
+        "did not run. This is not a runtime problem: install it with " +
+        "`yarn add -D @axe-core/react` for dev-time violations. " +
+        "Dependency-free checks run `node scripts/a11y/static-audit.mjs`.",
+      error,
+    );
   }
 }
 
 export default function App({ Component, pageProps }: AppProps) {
   useEffect(() => {
-    initAxe().catch(() => {
-      // axe-core is a dev-only optional dependency; swallow import errors
-      // in environments where it is not installed.
-    });
+    // `initAxe` reports its own failure once; a second silent catch here would
+    // hide the very thing #705 exists to surface.
+    initAxe().catch(() => {});
   }, []);
 
   const router = useRouter();
