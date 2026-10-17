@@ -83,8 +83,13 @@ const labelSizeClasses: Record<SpinnerSize, string> = {
  *   button that already has a name ("Saving…").
  * - With `label` the ring becomes `role="status"`, which announces politely;
  *   for failures that must interrupt, use `LiveAlert` instead.
- * - The CSS animation is disabled by the global `prefers-reduced-motion` rule,
- *   so the ring must never be the only progress signal — pair it with text.
+ * - Under `prefers-reduced-motion: reduce` the global stylesheet keeps the
+ *   ring turning at 3s rather than stopping it: a stopped ring is
+ *   indistinguishable from a broken UI. The rule is therefore not "disable
+ *   the spinner" but "never let the spinner be the only signal" — always pass
+ *   `label`, or pair it with adjacent text. See
+ *   `docs/accessibility/reduced-motion.md` and `lib/a11y/motion.ts`
+ *   (`loaderCue`), which encodes the same contract.
  *
  * @since 0.1.0
  */

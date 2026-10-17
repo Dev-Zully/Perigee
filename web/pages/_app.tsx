@@ -20,6 +20,10 @@ import { FeatureFlagProvider } from "../features/feature-flags";
 // `prefers-reduced-motion` setting, in addition to the per-component
 // `useReducedMotion()` guards already in place.
 import { MotionProvider } from "../components/MotionProvider";
+// WEB (#700): locale/locale persistence. `next-intl` resolves the message
+// catalogue; `LocaleSync` owns the document-level `lang`/`dir` attributes,
+// which CSS logical properties and assistive technology both depend on.
+import { LocaleSync } from "../components/LocaleSync";
 // WEB-52 (#185): global command palette — ⌘K / Ctrl+K / `/` opens a searchable
 // launcher for navigation, vaults, settings and quick actions.
 import { CommandPaletteLauncher } from "../components/CommandPaletteLauncher";
@@ -68,41 +72,42 @@ export default function App({ Component, pageProps }: AppProps) {
   return (
     <div className={inter.className}>
       <MotionProvider>
-        <FeatureFlagProvider>
-          <NextIntlClientProvider
-            locale={router?.locale ?? "en"}
-            messages={pageProps.messages ?? defaultMessages}
-            timeZone="UTC"
-          >
-            <WalletProvider>
-              <ToastProvider>
-                <AnnouncerProvider>
-                <SkipLink />
-                {/* Network status and API availability (#109) */}
-                <NetworkStatusBanner apiUrl={API_URL} />
+        <LocaleSync>
+          <FeatureFlagProvider>
+            <NextIntlClientProvider
+              locale={router?.locale ?? "en"}
+              messages={pageProps.messages ?? defaultMessages}
+              timeZone="UTC"
+            >
+              <WalletProvider>
+                <ToastProvider>
+                  <AnnouncerProvider>
+                    <SkipLink />
+                    {/* Network status and API availability (#109) */}
+                    <NetworkStatusBanner apiUrl={API_URL} />
 
-                {/*
-                 * Graceful RPC fallback — shown when the backend is unreachable (#115).
-                 * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
-                 * stale-data badges on individual views.
-                 */}
-                <RpcFallbackBanner apiUrl={API_URL}>
-                  <ErrorBoundary>
-                    {/* tabIndex={-1} so the skip link can move focus here. */}
-                    <main id="main-content" tabIndex={-1}>
-                      <Component {...pageProps} />
-                    </main>
-                    <CommandPaletteLauncher />
-                    <Analytics />
-                    <ServiceWorkerManager />
-                  </ErrorBoundary>
-                </AnnouncerProvider>
-                </RpcFallbackBanner>
-              </ToastProvider>
-            </WalletProvider>
-          </NextIntlClientProvider>
-        </FeatureFlagProvider>
-      </MotionProvider>
+                    {/*
+                     * Graceful RPC fallback — shown when the backend is unreachable (#115).
+                     * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
+                     * stale-data badges on individual views.
+                     */}
+                    <RpcFallbackBanner apiUrl={API_URL}>
+                      <ErrorBoundary>
+                        {/* tabIndex={-1} so the skip link can move focus here (#696). */}
+                        <main id="main-content" tabIndex={-1}>
+                          <Component {...pageProps} />
+                        </main>
+                        <CommandPaletteLauncher />
+                        <Analytics />
+                        <ServiceWorkerManager />
+                      </ErrorBoundary>
+                    </RpcFallbackBanner>
+                  </AnnouncerProvider>
+                </ToastProvider>
+              </WalletProvider>
+            </NextIntlClientProvider>
+          </FeatureFlagProvider>
+        </LocaleSync>      </MotionProvider>
     </div>
   );
 }

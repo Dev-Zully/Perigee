@@ -10,6 +10,10 @@
 /* Right-to-left mirroring for directional icons (#699) */
 @import "./rtl.css";
 
+/* High-contrast support: Windows HCM (`forced-colors`) plus the manual
+   data-contrast="high" toggle. Issue #701. */
+@import "./high-contrast.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

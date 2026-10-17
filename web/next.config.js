@@ -10,6 +10,20 @@ const nextConfig = {
   transpilePackages: ["@creit.tech/stellar-wallets-kit"],
   turbopack: {},
 
+  // Locale routing (issue #700). Without this block `router.locale` is
+  // always undefined, `next-intl` always loads `messages/en.json`, and the
+  // language switcher is decoration. The list must stay identical to
+  // SUPPORTED_LOCALES in lib/locale/locales.ts — lib/locale/locales.test.cjs
+  // asserts that it is. `localeDetection: false` keeps the server from
+  // redirecting on Accept-Language, so an Arabic URL is never rewritten to
+  // English for a crawler or a shared link; the switcher is the only thing
+  // that changes the locale, and it persists the choice.
+  i18n: {
+    locales: ["en", "es", "zh", "ar", "hi", "pt", "fr", "de"],
+    defaultLocale: "en",
+    localeDetection: false,
+  },
+
   images: {
     // Modern formats first; Next negotiates AVIF/WebP from the Accept header.
     formats: ["image/avif", "image/webp"],
