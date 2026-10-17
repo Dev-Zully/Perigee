@@ -1,3 +1,8 @@
+//! Core fee market integration: calculation, collection, persistence, analytics.
+//!
+//! On-chain fee transparency and sponsorship live in `contracts/fee_engine`
+//! (#669, #670). This module provides off-chain aggregation and validation.
+
 pub mod analytics;
 pub mod calculation;
 pub mod collector;
@@ -5,22 +10,9 @@ pub mod persistence;
 pub mod service;
 pub mod validation;
 
-pub use analytics::{
-    AssetHwmTracker, FeeAnalyticsEngine, FeePrediction, LossRecoveryHwm, MarketConditions,
-    ModelBreakdown, TrendDirection,
-};
-pub use calculation::{
-    calculate_bid, select_bid, FeeAnalyticsResult, FeeHistoryQuery, FeeHistoryResult,
-    FeeRecommendationInputs, FeeRecommendationResult, InclusionSpeed,
-    DEFAULT_SAFETY_MARGIN_BPS, SAFETY_MARGIN_MAX_BPS, SAFETY_MARGIN_MIN_BPS,
-};
-pub use collector::{deduct_network_fees, FeeCollector, FeeCollectorConfig, FeeCollectorError};
-pub use persistence::{
-    calculate_sweep_amount, needs_sweep, FeeStore, FeeStoreError, LedgerFeeSample,
-    TransactionFeeRecord, UnclaimedFeeCap,
-};
-pub use service::{ChargeReceipt, ChargeRequest, FeeService, IdempotencyStore, IDEMPOTENCY_TTL};
-pub use validation::{
-    safety_margin_to_bps, validate_charge_request, validate_ledger_fee_sample,
-    validate_safety_margin_bps, FeeValidationError, FeeValidator,
+pub use analytics::{filter_by_vault, summarize, FeeAnalyticsSummary};
+pub use collector::from_event_parts;
+pub use persistence::FeeHistoryStore;
+pub use service::{
+    validate_sponsored_request, FeeKind, FeeRecordView, SponsoredFeeRequest,
 };

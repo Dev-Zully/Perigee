@@ -5,6 +5,9 @@
 //! Closes OdyxeeeLabs/Perigee#661
 //! Closes OdyxeeeLabs/Perigee#662
 //! Closes OdyxeeeLabs/Perigee#663
+//! Closes OdyxeeeLabs/Perigee#669
+//! Closes OdyxeeeLabs/Perigee#670
+//! Closes OdyxeeeLabs/Perigee#671
 //!
 //! Three fee mechanisms that a vault needs, in one contract, because they
 //! answer to the same question — *who is paid, out of what, and when* — and
@@ -111,6 +114,12 @@ pub enum Error {
     InvalidFeeSplit = 11,
     /// A fee above `MAX_FEE_BPS` was configured.
     FeeTooHigh = 12,
+    /// Reentrant call into a non-reentrant fee entry point (#671).
+    Reentrancy = 13,
+    /// Sponsor is not authorised to pay fees for this user (#670).
+    SponsorNotAllowed = 14,
+    /// Fee history index is out of range (#669).
+    HistoryOutOfBounds = 15,
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -180,6 +189,32 @@ pub struct PerformanceTier {
 /// The full breakdown of a fee charge.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeRecord {
+    /// Monotonic sequence id for historical queries.
+    pub seq: u64,
+    /// Vault the fee was charged against.
+    pub vault: Address,
+    /// Who triggered the charge (may be a sponsor).
+    pub payer: Address,
+    /// Gross fee before discount.
+    pub gross: i128,
+    /// Discount applied.
+    pub discount: i128,
+    /// Net fee after discount.
+    pub net: i128,
+    /// Vault recipient share.
+    pub vault_share: i128,
+    /// Treasury share.
+    pub protocol_share: i128,
+    /// Ledger timestamp.
+    pub timestamp: u64,
+    /// Kind: 1 = management, 2 = performance, 3 = combined.
+    pub kind: u32,
+}
+
+/// Breakdown of a computed fee for off-chain analytics and on-chain events.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeeBreakdown {
     /// Management fee accrued.
     pub management_fee: i128,
@@ -215,7 +250,17 @@ pub enum DataKey {
     Vault(Address),
     /// [`Stake`] for a staker.
     Stake(Address),
+
+    /// Reentrancy lock bit (#671).
+    ReentrancyLock,
+    /// Next fee event sequence id (#669).
+    FeeSeq,
+    /// Historical fee record by sequence (#669).
+    FeeHistory(u64),
+    /// Allowed fee sponsor for a user (#670).
+    Sponsor(Address),
 }
+
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -571,25 +616,45 @@ impl FeeEngine {
     /// and advances `last_accrual`, so the next call charges only for the time
     /// since this one.
     pub fn accrue_management_fee(env: Env, vault: Address, aum: i128) -> Result<i128, Error> {
-        let config = load_config(&env)?;
-        let mut state = load_vault(&env, &vault)?;
+        Self::reentrancy_enter(&env)?;
+        let out = (|| {
+            let config = load_config(&env)?;
+            let mut state = load_vault(&env, &vault)?;
 
-        let now = env.ledger().timestamp();
-        let elapsed = now.saturating_sub(state.last_accrual);
-        let fee = if elapsed == 0 || aum <= 0 {
-            0
-        } else {
-            aum.checked_mul(config.management_fee_bps as i128)
-                .ok_or(Error::MathOverflow)?
-                .checked_mul(elapsed as i128)
-                .ok_or(Error::MathOverflow)?
-                / (BPS_DENOMINATOR * SECONDS_PER_YEAR)
-        };
+            let now = env.ledger().timestamp();
+            let elapsed = now.saturating_sub(state.last_accrual);
+            let fee = if elapsed == 0 || aum <= 0 {
+                0
+            } else {
+                aum.checked_mul(config.management_fee_bps as i128)
+                    .ok_or(Error::MathOverflow)?
+                    .checked_mul(elapsed as i128)
+                    .ok_or(Error::MathOverflow)?
+                    / (BPS_DENOMINATOR * SECONDS_PER_YEAR)
+            };
 
-        state.last_accrual = now;
-        state.fees_paid = checked_add(state.fees_paid, fee)?;
-        save_vault(&env, &vault, &state);
-        Ok(fee)
+            state.last_accrual = now;
+            state.fees_paid = checked_add(state.fees_paid, fee)?;
+            save_vault(&env, &vault, &state);
+            if fee > 0 {
+                let (vault_share, protocol_share) =
+                    Self::split_fee(fee, config.protocol_share_bps)?;
+                Self::record_fee_event(
+                    &env,
+                    &vault,
+                    &vault,
+                    fee,
+                    0,
+                    fee,
+                    vault_share,
+                    protocol_share,
+                    1,
+                );
+            }
+            Ok(fee)
+        })();
+        Self::reentrancy_exit(&env);
+        out
     }
 
     // ── Performance fee (#661) ─────────────────────────────────────────────
@@ -600,37 +665,58 @@ impl FeeEngine {
     /// fee is charged on it, and the mark rises. If the NAV has fallen below the
     /// last crystallised value, the fee charged on that loss is clawed back.
     pub fn crystallize(env: Env, vault: Address, nav: i128) -> Result<i128, Error> {
-        let config = load_config(&env)?;
-        let mut state = load_vault(&env, &vault)?;
+        Self::reentrancy_enter(&env)?;
+        let out = (|| {
+            let config = load_config(&env)?;
+            let mut state = load_vault(&env, &vault)?;
 
-        if nav > state.high_water_mark {
-            let profit = nav - state.high_water_mark;
-            let rate = perf_rate_for_profit(&env, profit).unwrap_or(config.performance_fee_bps);
-            let fee = profit
-                .checked_mul(rate as i128)
-                .ok_or(Error::MathOverflow)?
-                / BPS_DENOMINATOR;
-            state.high_water_mark = nav;
-            state.last_crystallized = nav;
-            state.fees_paid = checked_add(state.fees_paid, fee)?;
-            save_vault(&env, &vault, &state);
-            return Ok(fee);
-        }
+            if nav > state.high_water_mark {
+                let profit = nav - state.high_water_mark;
+                let rate =
+                    perf_rate_for_profit(&env, profit).unwrap_or(config.performance_fee_bps);
+                let fee = profit
+                    .checked_mul(rate as i128)
+                    .ok_or(Error::MathOverflow)?
+                    / BPS_DENOMINATOR;
+                state.high_water_mark = nav;
+                state.last_crystallized = nav;
+                state.fees_paid = checked_add(state.fees_paid, fee)?;
+                save_vault(&env, &vault, &state);
+                if fee > 0 {
+                    let (vault_share, protocol_share) =
+                        Self::split_fee(fee, config.protocol_share_bps)?;
+                    Self::record_fee_event(
+                        &env,
+                        &vault,
+                        &vault,
+                        fee,
+                        0,
+                        fee,
+                        vault_share,
+                        protocol_share,
+                        2,
+                    );
+                }
+                return Ok(fee);
+            }
 
-        if nav < state.last_crystallized {
-            let loss = state.last_crystallized - nav;
-            let rate = perf_rate_for_profit(&env, loss).unwrap_or(config.performance_fee_bps);
-            let clawback = loss
-                .checked_mul(rate as i128)
-                .ok_or(Error::MathOverflow)?
-                / BPS_DENOMINATOR;
-            state.fees_paid = state.fees_paid.saturating_sub(clawback);
-            state.last_crystallized = nav;
-            save_vault(&env, &vault, &state);
-            return Ok(0);
-        }
+            if nav < state.last_crystallized {
+                let loss = state.last_crystallized - nav;
+                let rate = perf_rate_for_profit(&env, loss).unwrap_or(config.performance_fee_bps);
+                let clawback = loss
+                    .checked_mul(rate as i128)
+                    .ok_or(Error::MathOverflow)?
+                    / BPS_DENOMINATOR;
+                state.fees_paid = state.fees_paid.saturating_sub(clawback);
+                state.last_crystallized = nav;
+                save_vault(&env, &vault, &state);
+                return Ok(0);
+            }
 
-        Ok(0)
+            Ok(0)
+        })();
+        Self::reentrancy_exit(&env);
+        out
     }
 
     // ── Full charge ────────────────────────────────────────────────────────
@@ -664,6 +750,164 @@ impl FeeEngine {
             vault_share,
             protocol_share,
         })
+    }
+
+    /// # Sponsored fee computation (#670)
+    ///
+    /// Same as `compute_fees`, but `payer` may be a pre-authorised sponsor
+    /// paying on behalf of `vault` (meta-transaction / gasless path). Emits
+    /// fee transparency records with `payer` set to the sponsor.
+    pub fn compute_fees_sponsored(
+        env: Env,
+        vault: Address,
+        payer: Address,
+        nav: i128,
+    ) -> Result<FeeBreakdown, Error> {
+        Self::require_payer_or_sponsor(&env, &vault, &payer)?;
+        let breakdown = Self::compute_fees(env.clone(), vault.clone(), nav)?;
+        if breakdown.net_total > 0 {
+            Self::record_fee_event(
+                &env,
+                &vault,
+                &payer,
+                breakdown.total,
+                breakdown.discount,
+                breakdown.net_total,
+                breakdown.vault_share,
+                breakdown.protocol_share,
+                3,
+            );
+        }
+        Ok(breakdown)
+    }
+
+
+    // ── Reentrancy (#671) ────────────────────────────────────────────────────
+
+    fn reentrancy_enter(env: &Env) -> Result<(), Error> {
+        let key = DataKey::ReentrancyLock;
+        let locked: bool = env.storage().instance().get(&key).unwrap_or(false);
+        if locked {
+            return Err(Error::Reentrancy);
+        }
+        env.storage().instance().set(&key, &true);
+        Ok(())
+    }
+
+    fn reentrancy_exit(env: &Env) {
+        env.storage().instance().set(&DataKey::ReentrancyLock, &false);
+    }
+
+    // ── Fee transparency (#669) ──────────────────────────────────────────────
+
+    fn next_fee_seq(env: &Env) -> u64 {
+        let seq: u64 = env.storage().instance().get(&DataKey::FeeSeq).unwrap_or(0u64);
+        let next = seq.saturating_add(1);
+        env.storage().instance().set(&DataKey::FeeSeq, &next);
+        next
+    }
+
+    fn record_fee_event(
+        env: &Env,
+        vault: &Address,
+        payer: &Address,
+        gross: i128,
+        discount: i128,
+        net: i128,
+        vault_share: i128,
+        protocol_share: i128,
+        kind: u32,
+    ) {
+        let seq = Self::next_fee_seq(env);
+        let timestamp = env.ledger().timestamp();
+        let record = FeeRecord {
+            seq,
+            vault: vault.clone(),
+            payer: payer.clone(),
+            gross,
+            discount,
+            net,
+            vault_share,
+            protocol_share,
+            timestamp,
+            kind,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::FeeHistory(seq), &record);
+        env.events().publish(
+            (symbol_short!("fee_chg"), vault.clone(), kind),
+            (
+                seq,
+                payer.clone(),
+                gross,
+                discount,
+                net,
+                vault_share,
+                protocol_share,
+                timestamp,
+            ),
+        );
+    }
+
+    /// Number of fee history records (highest sequence id).
+    pub fn fee_history_len(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::FeeSeq).unwrap_or(0u64)
+    }
+
+    /// Fetch a historical fee record by sequence id (1-based).
+    pub fn get_fee_record(env: Env, seq: u64) -> Result<FeeRecord, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::FeeHistory(seq))
+            .ok_or(Error::HistoryOutOfBounds)
+    }
+
+    // ── Fee delegation / sponsored fees (#670) ───────────────────────────────
+
+    /// Authorise `sponsor` to pay fees on behalf of `user` (meta-tx / gasless).
+    pub fn set_fee_sponsor(
+        env: Env,
+        user: Address,
+        sponsor: Address,
+        allowed: bool,
+    ) -> Result<(), Error> {
+        user.require_auth();
+        if allowed {
+            env.storage()
+                .instance()
+                .set(&DataKey::Sponsor(user.clone()), &sponsor);
+        } else {
+            env.storage()
+                .instance()
+                .remove(&DataKey::Sponsor(user.clone()));
+        }
+        env.events()
+            .publish((symbol_short!("sponsor"), user), (sponsor, allowed));
+        Ok(())
+    }
+
+    /// Return the configured fee sponsor for `user`, if any.
+    pub fn get_fee_sponsor(env: Env, user: Address) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Sponsor(user))
+    }
+
+    fn require_payer_or_sponsor(
+        env: &Env,
+        user: &Address,
+        payer: &Address,
+    ) -> Result<(), Error> {
+        if payer == user {
+            payer.require_auth();
+            return Ok(());
+        }
+        payer.require_auth();
+        let allowed: Option<Address> =
+            env.storage().instance().get(&DataKey::Sponsor(user.clone()));
+        match allowed {
+            Some(s) if &s == payer => Ok(()),
+            _ => Err(Error::SponsorNotAllowed),
+        }
     }
 
     /// # Split a fee between the vault and the treasury
