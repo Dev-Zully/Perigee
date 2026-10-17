@@ -8,6 +8,11 @@
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx,.js,.jsx",
     "test": "node --test ./lib/**/*.test.cjs",
+    "dev:proxy": "node ./dev-proxy/index.mjs",
+    "dev:mock": "node ./dev-proxy/index.mjs --config dev.proxy.json",
+    "dev:simulate": "node ./dev-proxy/index.mjs --config dev.proxy.json --simulate",
+    "dev:fork": "node ./dev-proxy/index.mjs --config dev.proxy.json --fork",
+    "dev:replay": "node ./dev-proxy/index.mjs --config dev.proxy.json --replay"
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:ci": "playwright test --reporter=github,html",
@@ -39,7 +44,9 @@
     "eslint-config-next": "^15.5.11",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "msw": "^2.11.3",
+    "dev-proxy": "^1.0.0"
   },
-  "packageManager": "yarn@4.9.1+sha512.f95ce356460e05be48d66401c1ae64ef84d163dd689964962c6888a9810865e39097a5e9de748876c2e0bf89b232d583c33982773e9903ae7a76257270986538"
+  "packageManager": "yarn@yarn@4.9.1+sha512.f95ce356460e05be48d66401c1ae64ef84d163dd689964962c6888a9810865e39097a5e9de748876c2e0bf89b232d583c33982773e9903ae7a76257270986538"
 }
