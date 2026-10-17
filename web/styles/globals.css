@@ -5,6 +5,10 @@
    `variables.css` MUST appear before the `@tailwind` directives so the
    `:root` custom-properties are in scope before Tailwind's `base` layer. */
 @import "./variables.css";
+/* WCAG 2.4.7 focus ring + skip link (#696) */
+@import "./focus.css";
+/* Right-to-left mirroring for directional icons (#699) */
+@import "./rtl.css";
 
 /* High-contrast support: Windows HCM (`forced-colors`) plus the manual
    data-contrast="high" toggle. Issue #701. */
