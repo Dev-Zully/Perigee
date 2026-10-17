@@ -23,6 +23,11 @@ import { MotionProvider } from "../components/MotionProvider";
 // WEB-52 (#185): global command palette — ⌘K / Ctrl+K / `/` opens a searchable
 // launcher for navigation, vaults, settings and quick actions.
 import { CommandPaletteLauncher } from "../components/CommandPaletteLauncher";
+// WCAG 2.4.1 (#696/#698): the skip link is the first focusable element and
+// moves focus into <main id="main-content">.
+import { SkipLink } from "../components/common/SkipLink/SkipLink";
+// Global live-region announcer with a persisted verbosity setting (#697).
+import { AnnouncerProvider } from "../components/AnnouncerProvider";
 
 // WEB-54 (#187): self-host the Inter typeface through `next/font`. Font files
 // are downloaded and preloaded at build time, eliminating FOIT and render
@@ -71,6 +76,8 @@ export default function App({ Component, pageProps }: AppProps) {
           >
             <WalletProvider>
               <ToastProvider>
+                <AnnouncerProvider>
+                <SkipLink />
                 {/* Network status and API availability (#109) */}
                 <NetworkStatusBanner apiUrl={API_URL} />
 
@@ -81,11 +88,15 @@ export default function App({ Component, pageProps }: AppProps) {
                  */}
                 <RpcFallbackBanner apiUrl={API_URL}>
                   <ErrorBoundary>
-                    <Component {...pageProps} />
+                    {/* tabIndex={-1} so the skip link can move focus here. */}
+                    <main id="main-content" tabIndex={-1}>
+                      <Component {...pageProps} />
+                    </main>
                     <CommandPaletteLauncher />
                     <Analytics />
                     <ServiceWorkerManager />
                   </ErrorBoundary>
+                </AnnouncerProvider>
                 </RpcFallbackBanner>
               </ToastProvider>
             </WalletProvider>
