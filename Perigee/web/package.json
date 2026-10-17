@@ -13,10 +13,17 @@
     "dev:simulate": "node ./dev-proxy/index.mjs --config dev.proxy.json --simulate",
     "dev:fork": "node ./dev-proxy/index.mjs --config dev.proxy.json --fork",
     "dev:replay": "node ./dev-proxy/index.mjs --config dev.proxy.json --replay"
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:ci": "playwright test --reporter=github,html",
+    "test:e2e:chromium": "playwright test --project=chromium",
+    "test:e2e:firefox": "playwright test --project=firefox",
+    "test:e2e:webkit": "playwright test --project=webkit",
+    "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "^1.9.5",
-    "clsx": "^2.1.1",
+    "cls": "^2.1.1",
     "framer-motion": "^12.26.2",
     "lucide-react": "^0.562.0",
     "mermaid": "^11.14.0",
@@ -28,6 +35,8 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.3",
+    "@playwright/test": "^1.49.0",
+    "@types/node": "25.0.10",
     "@types/node": "25.0.10",
     "@types/react": "19.2.9",
     "autoprefixer": "^10.4.0",
