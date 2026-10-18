@@ -141,6 +141,8 @@ pub enum Error {
     WildcardInUse = 14,
     /// The wildcard is not registered.
     WildcardNotFound = 15,
+    /// The canonical protocol roles have already been provisioned.
+    ProtocolRolesAlreadyConfigured = 16,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -211,6 +213,34 @@ pub struct RoleInfo {
     pub member_count: u32,
 }
 
+/// Canonical Perigee operational roles provisioned by
+/// [`AccessControl::setup_protocol_roles`].
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ProtocolRole {
+    Owner,
+    Admin,
+    Strategist,
+    Keeper,
+    Emergency,
+}
+
+impl ProtocolRole {
+    /// Stable role name used by the generic role and permission APIs.
+    pub fn name(self, env: &Env) -> String {
+        String::from_str(
+            env,
+            match self {
+                ProtocolRole::Owner => "owner",
+                ProtocolRole::Admin => "admin",
+                ProtocolRole::Strategist => "strategist",
+                ProtocolRole::Keeper => "keeper",
+                ProtocolRole::Emergency => "emergency",
+            },
+        )
+    }
+}
+
 /// Storage keys.
 ///
 /// `Grant`, `RolePermission` and `RoleMember` are the authoritative membership
@@ -244,6 +274,8 @@ pub enum DataKey {
     RoleAdmin(String),
     /// Every role that exists.
     RoleList,
+    /// Whether the canonical Perigee operational roles have been provisioned.
+    ProtocolRolesConfigured,
     /// Every registered namespace prefix, stored without the trailing `*`.
     Wildcards,
     /// Live grants referencing a namespace prefix, keyed by that prefix.
@@ -802,6 +834,110 @@ fn apply_role_member_revoke(env: &Env, role: &String, member: &Address) -> bool 
     true
 }
 
+fn protocol_role_permissions(env: &Env, role: ProtocolRole) -> Vec<String> {
+    let names: &[&str] = match role {
+        ProtocolRole::Owner => &[
+            "vault.deposit",
+            "vault.withdraw",
+            "vault.transfer",
+            "vault.configure",
+        ],
+        ProtocolRole::Admin => &[
+            "roles.manage",
+            "vault.pause",
+            "vault.unpause",
+            "strategy.configure",
+            "strategy.approve",
+            "fees.configure",
+            "keeper.configure",
+            "emergency.pause",
+        ],
+        ProtocolRole::Strategist => &[
+            "strategy.rebalance",
+            "strategy.rotate",
+            "strategy.harvest",
+        ],
+        ProtocolRole::Keeper => &[
+            "strategy.harvest",
+            "strategy.rebalance",
+            "oracle.update",
+        ],
+        ProtocolRole::Emergency => &[
+            "emergency.pause",
+            "emergency.cancel",
+            "vault.pause",
+            "strategy.pause",
+        ],
+    };
+    let mut permissions = Vec::new(env);
+    for name in names {
+        permissions.push_back(String::from_str(env, name));
+    }
+    permissions
+}
+
+fn provision_protocol_role(
+    env: &Env,
+    actor: &Address,
+    role: ProtocolRole,
+    member: &Address,
+) -> Result<(), Error> {
+    let name = role.name(env);
+    validate_role(&name)?;
+    if role_exists(env, &name) {
+        return Err(Error::RoleExists);
+    }
+    let config = read_config(env)?;
+    let mut roles = read_str_list(env, &DataKey::RoleList);
+    if roles.len() >= config.max_roles {
+        return Err(Error::LimitExceeded);
+    }
+
+    // Keep the root as role admin: operational role holders can be rotated
+    // without granting them authority to redefine their own permissions.
+    env.storage()
+        .persistent()
+        .set(&DataKey::RoleAdmin(name.clone()), actor);
+    roles.push_back(name.clone());
+    write_str_list(env, &DataKey::RoleList, &roles);
+    emit_role_created(
+        env,
+        RoleCreatedEvent {
+            actor: actor.clone(),
+            role: name.clone(),
+            admin: actor.clone(),
+        },
+    );
+
+    for selector in protocol_role_permissions(env, role).iter() {
+        if apply_role_permission(env, &name, &selector)? {
+            emit_role_permission(
+                env,
+                RolePermissionEvent {
+                    actor: actor.clone(),
+                    role: name.clone(),
+                    selector,
+                    granted: true,
+                    batch_size: 1,
+                },
+            );
+        }
+    }
+    if apply_role_member(env, &name, member)? {
+        emit_role_member(
+            env,
+            RoleMemberEvent {
+                actor: actor.clone(),
+                role: name,
+                member: member.clone(),
+                granted: true,
+                batch_size: 1,
+            },
+        );
+    }
+    Ok(())
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 /// Per-function access control list with wildcard support and batch updates.
@@ -837,6 +973,45 @@ impl AccessControl {
                 config,
             },
         );
+        Ok(())
+    }
+
+    /// Provision the five standard Perigee roles with fixed granular
+    /// permissions. Role membership and permissions remain manageable through
+    /// the existing role APIs; only the root admin can administer these roles.
+    ///
+    /// The `admin` role here is an operational role and is distinct from the
+    /// ACL's root admin. The root admin remains the sole authority over role
+    /// definitions, preventing an operational admin from escalating its own
+    /// permissions.
+    pub fn setup_protocol_roles(
+        env: Env,
+        actor: Address,
+        owner: Address,
+        admin: Address,
+        strategist: Address,
+        keeper: Address,
+        emergency: Address,
+    ) -> Result<(), Error> {
+        require_root(&env, &actor)?;
+        require_writable(&env)?;
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::ProtocolRolesConfigured)
+            .unwrap_or(false)
+        {
+            return Err(Error::ProtocolRolesAlreadyConfigured);
+        }
+
+        provision_protocol_role(&env, &actor, ProtocolRole::Owner, &owner)?;
+        provision_protocol_role(&env, &actor, ProtocolRole::Admin, &admin)?;
+        provision_protocol_role(&env, &actor, ProtocolRole::Strategist, &strategist)?;
+        provision_protocol_role(&env, &actor, ProtocolRole::Keeper, &keeper)?;
+        provision_protocol_role(&env, &actor, ProtocolRole::Emergency, &emergency)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::ProtocolRolesConfigured, &true);
         Ok(())
     }
 
@@ -943,6 +1118,21 @@ impl AccessControl {
         env.storage()
             .persistent()
             .has(&DataKey::RoleMember(role, caller))
+    }
+
+    /// Whether `caller` belongs to one of the canonical Perigee roles.
+    pub fn has_protocol_role(env: Env, caller: Address, role: ProtocolRole) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::RoleMember(role.name(&env), caller))
+    }
+
+    /// Whether the canonical Perigee role set has been provisioned.
+    pub fn protocol_roles_configured(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::ProtocolRolesConfigured)
+            .unwrap_or(false)
     }
 
     /// Every member of `role`.

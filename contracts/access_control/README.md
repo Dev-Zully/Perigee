@@ -45,6 +45,28 @@ or renounce operation can remove it, so a mis-issued batch can never lock the
 ACL out. The only way it changes hands is the explicit, audited
 `transfer_admin`.
 
+### Standard Perigee roles
+
+`setup_protocol_roles` provisions five canonical roles in one root-admin-only,
+all-or-nothing call. The operational `admin` role is distinct from the ACL's
+root admin. All five role definitions remain root-admin controlled, so an
+operational role holder cannot redefine its own permissions.
+
+| Role | Selectors |
+|---|---|
+| `owner` | `vault.deposit`, `vault.withdraw`, `vault.transfer`, `vault.configure` |
+| `admin` | `roles.manage`, `vault.pause`, `vault.unpause`, `strategy.configure`, `strategy.approve`, `fees.configure`, `keeper.configure`, `emergency.pause` |
+| `strategist` | `strategy.rebalance`, `strategy.rotate`, `strategy.harvest` |
+| `keeper` | `strategy.harvest`, `strategy.rebalance`, `oracle.update` |
+| `emergency` | `emergency.pause`, `emergency.cancel`, `vault.pause`, `strategy.pause` |
+
+These are exact selectors, not wildcards. Host contracts use the usual
+`has_permission` / `require_permission` guard with the same selector strings.
+The emergency role intentionally has no unpause permission; recovery is
+reserved for admin/root-admin policy. `has_protocol_role` queries membership,
+and the existing `grant_role` / `revoke_role` methods let the root admin rotate
+members without changing role permissions.
+
 ### Wildcards
 
 | Selector | Kind | Matches |
@@ -205,6 +227,7 @@ pub fn harvest(env: Env, caller: Address, vault: Address) -> Result<(), Error> {
 | 13 | `UnregisteredWildcard` | Namespace wildcard granted before registration. |
 | 14 | `WildcardInUse` | Pattern is still referenced by a live permission. |
 | 15 | `WildcardNotFound` | Pattern is not registered. |
+| 16 | `ProtocolRolesAlreadyConfigured` | The canonical Perigee roles have already been provisioned. |
 
 ## Testing
 
@@ -213,7 +236,8 @@ cargo test -p perigee-access-control
 cargo build -p perigee-access-control --target wasm32-unknown-unknown --release
 ```
 
-67 tests cover initialization, per-function grants, exact and wildcard
+71 tests cover initialization, per-function grants, standard Perigee roles,
+exact and wildcard
 matching, role delegation, all four batch entry points, every limit, lockdown,
 self-service renounce, admin rotation, index consistency under mixed
 operations, and the event invariant.

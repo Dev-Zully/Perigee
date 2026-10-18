@@ -12,7 +12,9 @@ use soroban_sdk::{
     vec, Address, Env, String, Symbol, TryIntoVal, Vec,
 };
 
-use crate::{AccessControl, AccessControlClient, AclConfig, Error, GrantEntry, RoleInfo};
+use crate::{
+    AccessControl, AccessControlClient, AclConfig, Error, GrantEntry, ProtocolRole, RoleInfo,
+};
 
 type Sel = String;
 
@@ -736,6 +738,147 @@ fn destroy_role_releases_its_wildcard_usage() {
     client.destroy_role(&admin, &s(&env, "vault_ops"));
     assert_eq!(client.wildcard_usage(&s(&env, "vault.*")), 0);
     assert!(client.unregister_wildcard(&admin, &s(&env, "vault.*")));
+}
+
+// ── Canonical Perigee roles ───────────────────────────────────────────────────
+
+fn setup_protocol_roles(
+    client: &AccessControlClient<'_>,
+    env: &Env,
+    root: &Address,
+) -> [Address; 5] {
+    let members = [
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+    ];
+    client.setup_protocol_roles(
+        root,
+        &members[0],
+        &members[1],
+        &members[2],
+        &members[3],
+        &members[4],
+    );
+    members
+}
+
+#[test]
+fn standard_roles_apply_granular_permissions() {
+    let (env, id, root) = setup();
+    let client = AccessControlClient::new(&env, &id);
+    let [owner, admin, strategist, keeper, emergency] =
+        setup_protocol_roles(&client, &env, &root);
+
+    assert!(client.protocol_roles_configured());
+    assert!(client.has_protocol_role(&owner, &ProtocolRole::Owner));
+    assert!(client.has_protocol_role(&admin, &ProtocolRole::Admin));
+    assert!(client.has_protocol_role(&strategist, &ProtocolRole::Strategist));
+    assert!(client.has_protocol_role(&keeper, &ProtocolRole::Keeper));
+    assert!(client.has_protocol_role(&emergency, &ProtocolRole::Emergency));
+
+    assert!(client.has_permission(&owner, &s(&env, "vault.withdraw")));
+    assert!(!client.has_permission(&owner, &s(&env, "strategy.rotate")));
+
+    assert!(client.has_permission(&admin, &s(&env, "fees.configure")));
+    assert!(!client.has_permission(&admin, &s(&env, "vault.withdraw")));
+
+    assert!(client.has_permission(&strategist, &s(&env, "strategy.rotate")));
+    assert!(!client.has_permission(&strategist, &s(&env, "fees.configure")));
+
+    assert!(client.has_permission(&keeper, &s(&env, "strategy.harvest")));
+    assert!(!client.has_permission(&keeper, &s(&env, "strategy.configure")));
+
+    assert!(client.has_permission(&emergency, &s(&env, "emergency.pause")));
+    assert!(client.has_permission(&emergency, &s(&env, "strategy.pause")));
+    assert!(!client.has_permission(&emergency, &s(&env, "vault.unpause")));
+}
+
+#[test]
+fn standard_roles_are_initialized_once_and_root_authorized() {
+    let (env, id, root) = setup();
+    let client = AccessControlClient::new(&env, &id);
+    let stranger = Address::generate(&env);
+    let members: [Address; 5] = core::array::from_fn(|_| Address::generate(&env));
+
+    assert_eq!(
+        client.try_setup_protocol_roles(
+            &stranger,
+            &members[0],
+            &members[1],
+            &members[2],
+            &members[3],
+            &members[4],
+        ),
+        Err(Ok(Error::Unauthorized))
+    );
+    client.setup_protocol_roles(
+        &root,
+        &members[0],
+        &members[1],
+        &members[2],
+        &members[3],
+        &members[4],
+    );
+    assert_eq!(
+        client.try_setup_protocol_roles(
+            &root,
+            &members[0],
+            &members[1],
+            &members[2],
+            &members[3],
+            &members[4],
+        ),
+        Err(Ok(Error::ProtocolRolesAlreadyConfigured))
+    );
+    assert_eq!(client.list_roles().len(), 5);
+}
+
+#[test]
+fn failed_standard_role_setup_is_atomic_when_role_limit_is_too_low() {
+    let (env, id, root) = setup_with(AclConfig {
+        max_roles: 4,
+        ..AclConfig::default_config()
+    });
+    let client = AccessControlClient::new(&env, &id);
+    let members: [Address; 5] = core::array::from_fn(|_| Address::generate(&env));
+
+    assert_eq!(
+        client.try_setup_protocol_roles(
+            &root,
+            &members[0],
+            &members[1],
+            &members[2],
+            &members[3],
+            &members[4],
+        ),
+        Err(Ok(Error::LimitExceeded))
+    );
+    assert!(!client.protocol_roles_configured());
+    assert!(client.list_roles().is_empty());
+}
+
+#[test]
+fn standard_role_permissions_cannot_be_escalated_by_operational_admin() {
+    let (env, id, root) = setup();
+    let client = AccessControlClient::new(&env, &id);
+    let [_owner, admin, _strategist, _keeper, _emergency] =
+        setup_protocol_roles(&client, &env, &root);
+
+    assert_eq!(
+        client.try_grant_role_permission(
+            &admin,
+            &s(&env, "strategist"),
+            &s(&env, "*"),
+        ),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_grant_role(&admin, &s(&env, "keeper"), &admin),
+        Err(Ok(Error::Unauthorized))
+    );
 }
 
 // ── Batch updates ─────────────────────────────────────────────────────────────
