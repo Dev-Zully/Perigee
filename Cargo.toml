@@ -42,6 +42,8 @@ members = [
     "contracts/referral",
     # Olympus-style bonding and protocol-owned liquidity (#665).
     "contracts/protocol_owned_liquidity",
+    # Per-function permissions, wildcard selectors, batch ACL updates (#647).
+    "contracts/access_control",
 ]
 
 # CONTRACT-41 (#535): dedicated build profile used by `scripts/coverage.sh`
