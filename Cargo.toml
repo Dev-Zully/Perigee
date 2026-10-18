@@ -34,6 +34,14 @@ members = [
     "contracts/strategy_analytics",
     # Strategy rotation and cross-chain yield (#659, #656).
     "contracts/strategy_orchestration",
+    # Governance fee switch, revenue share, buyback/burn (#666).
+    "contracts/fee_switch",
+    # Utilization / volatility / competitor-aware fees (#667).
+    "contracts/dynamic_fees",
+    # On-chain referrals with anti-sybil controls (#664).
+    "contracts/referral",
+    # Olympus-style bonding and protocol-owned liquidity (#665).
+    "contracts/protocol_owned_liquidity",
 ]
 
 # CONTRACT-41 (#535): dedicated build profile used by `scripts/coverage.sh`
