@@ -1,18 +1,27 @@
 import type { Vault } from "@/types/vault";
+import { PrefetchLink } from "./PrefetchLink";
 
 export interface VaultRowProps {
   vault: Vault;
   style?: React.CSSProperties;
+  /** When set, the vault name links to this page and prefetches it on hover (#691). */
+  href?: string;
 }
 
-export function VaultRow({ vault, style }: VaultRowProps) {
+export function VaultRow({ vault, style, href }: VaultRowProps) {
   return (
     <div
       style={style}
       className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3"
     >
       <div className="flex flex-col">
-        <span className="text-sm font-medium text-white">{vault.name}</span>
+        {href ? (
+          <PrefetchLink href={href} className="text-sm font-medium text-white hover:text-cyan-300">
+            {vault.name}
+          </PrefetchLink>
+        ) : (
+          <span className="text-sm font-medium text-white">{vault.name}</span>
+        )}
         <span className="text-xs text-slate-400">{vault.owner}</span>
       </div>
       <div className="flex items-center gap-4 text-xs text-slate-400">

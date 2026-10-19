@@ -37,6 +37,76 @@ The `core` server uses [`tracing`](https://docs.rs/tracing) + `tracing-subscribe
 
 The `core` HTTP server listens for `SIGINT` (Ctrl-C) and `SIGTERM` on Unix targets. On either signal it stops accepting new connections and drains in-flight requests before exiting. Any long-lived background task spawned from `main` should be cancelable via `tokio::select!` or `CancellationToken` so that the process exits cleanly within a few seconds of the signal.
 
+## 📝 Commit message convention
+
+This repo enforces [Conventional Commits](https://www.conventionalcommits.org/).
+The `commit-msg` git hook (installed via Husky) validates every commit message
+automatically once you run `yarn install` at the repo root.
+
+### Format
+
+```
+<type>(<optional scope>): <short description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+### Allowed types
+
+| Type | When to use |
+|---|---|
+| `feat` | A new feature |
+| `fix` | A bug fix |
+| `docs` | Documentation only |
+| `style` | Formatting, whitespace — no logic change |
+| `refactor` | Code change that is neither fix nor feat |
+| `perf` | Performance improvement |
+| `test` | Adding or correcting tests |
+| `build` | Build system / dependency changes |
+| `ci` | CI configuration |
+| `chore` | Other maintenance |
+| `revert` | Reverts a previous commit |
+| `contract` | Soroban contract changes |
+| `agent` | Agent fleet / runtime changes |
+
+### Breaking changes
+
+Append `!` after the type/scope, or add a `BREAKING CHANGE:` footer:
+
+```
+feat(vault)!: require explicit policy version in deposit call
+
+BREAKING CHANGE: the `deposit` endpoint now requires a `policy_version`
+field. Clients on v0 must migrate before upgrading.
+```
+
+### Examples
+
+```
+feat(agent): add on-chain reputation score to agent identity
+fix(web): resolve wallet modal z-index on mobile
+docs(contracts): document policy_vault allowlist format
+ci: add commitlint workflow for PR validation
+contract(policy_vault): enforce drawdown threshold on rotation
+```
+
+## 📋 Changelog
+
+`CHANGELOG.md` is generated automatically from commit history.
+
+```bash
+# Append entries since the last git tag
+yarn changelog
+
+# Rebuild from scratch (first release)
+yarn changelog:first
+```
+
+Entries are written for: `feat`, `fix`, `perf`, `revert`, `docs`, `refactor`,
+`contract`, and `agent`. Build, CI, chore, style, and test commits are hidden.
+
 ## 🤝 Questions?
 
 Feel free to open an **Issue** or reach out to the **SoroLabs** team. Let's build the best Soroban developer tools together!

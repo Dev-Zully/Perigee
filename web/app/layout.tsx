@@ -21,6 +21,15 @@ import { API_URL } from '@/lib/api';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { WalletProvider } from '@/context/WalletContext';
 import '@/styles/globals.css';
+// WEB-15 (#469): mirror the Pages Router `MotionProvider` so the App Router
+// routes also honour `prefers-reduced-motion` once migration completes.
+import { MotionProvider } from '../components/MotionProvider';
+// WEB-52 (#185): command palette. The App Router still serves no real pages
+// (pages/ router is active), but keeping the launcher mounted here means the
+// palette survives the migration without a second wiring pass.
+import { CommandPaletteLauncher } from '../components/CommandPaletteLauncher';
+import { SkipLink } from '../components/common/SkipLink/SkipLink';
+import { AnnouncerProvider } from '../components/AnnouncerProvider';
 
 // WEB-54 (#187): self-host the Inter typeface through `next/font` instead of
 // loading it from an external stylesheet. Fonts are downloaded and preloaded
@@ -46,10 +55,18 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" className={inter.variable}>
       <body>
         <ErrorBoundary>
-          <WalletProvider>
-            <NetworkStatusBanner apiUrl={API_URL} />
-            {children}
-          </WalletProvider>
+          <MotionProvider>
+            <WalletProvider>
+              <AnnouncerProvider>
+                <SkipLink />
+                <CommandPaletteLauncher />
+                <NetworkStatusBanner apiUrl={API_URL} />
+                <main id="main-content" tabIndex={-1}>
+                  {children}
+                </main>
+              </AnnouncerProvider>
+            </WalletProvider>
+          </MotionProvider>
         </ErrorBoundary>
       </body>
     </html>

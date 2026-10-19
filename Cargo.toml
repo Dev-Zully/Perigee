@@ -2,9 +2,56 @@
 resolver = "2"
 members = [
     "core",
+    "contracts/bootstrap",
     "contracts/error_codes",
     "contracts/math",
     "contracts/guards",
+    "contracts/governance",
     "contracts/staking_rewards",
     "contracts/oracle_aggregator",
+    "contracts/policy_vault",
+    # Share-price manipulation resistance, rounding, dust (#636).
+    "contracts/vault_accounting",
+    # Multi-asset baskets with composite pricing (#637).
+    "contracts/basket_vault",
+    # Vault insurance coverage, claims, premiums (#638).
+    "contracts/vault_insurance",
+    # On-chain vault metadata and trait discovery (#639).
+    "contracts/vault_metadata",
+    # Deterministic vault factory + UUPS proxy (#632, #635).
+    "contracts/vault_factory",
+    # Pluggable yield strategies, rotation, performance fees (#633).
+    "contracts/vault_strategy",
+    # Circuit breaker, partial pause, timelocked unpause (#634).
+    "contracts/vault_guard",
+    # ERC-4626 tokenised vault (#631).
+    "contracts/erc4626_vault",
+    # Strategy-of-strategies and fee layering (#660).
+    "contracts/strategy_composability",
+    # Performance fees, management fees and fee discount tokens (#661, #662, #663).
+    "contracts/fee_engine",
+    # Strategy risk framework and performance tracking (#657, #658).
+    "contracts/strategy_analytics",
+    # Strategy rotation and cross-chain yield (#659, #656).
+    "contracts/strategy_orchestration",
+    # Governance fee switch, revenue share, buyback/burn (#666).
+    "contracts/fee_switch",
+    # Utilization / volatility / competitor-aware fees (#667).
+    "contracts/dynamic_fees",
+    # On-chain referrals with anti-sybil controls (#664).
+    "contracts/referral",
+    # Olympus-style bonding and protocol-owned liquidity (#665).
+    "contracts/protocol_owned_liquidity",
+    # Per-function permissions, wildcard selectors, batch ACL updates (#647).
+    "contracts/access_control",
 ]
+
+# CONTRACT-41 (#535): dedicated build profile used by `scripts/coverage.sh`
+# and the "Contracts — coverage" workflow. It inherits `dev` so tests behave
+# exactly as they do locally, pins line-table debug info so coverage maps back
+# to source lines, and disables incremental compilation so repeated runs
+# produce identical numbers.
+[profile.coverage]
+inherits = "dev"
+debug = 1
+incremental = false

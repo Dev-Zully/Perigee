@@ -1,4 +1,5 @@
 import Head from "next/head";
+import dynamic from "next/dynamic";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useTranslations } from "next-intl";
 
@@ -6,9 +7,28 @@ import { ConnectButton } from "../components/ConnectButton";
 import { ContractInteraction } from "../components/ContractInteraction";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { FunctionSidebar } from "../components/FunctionSidebar";
-import { ResultViewer } from "../components/Resultviewer";
+import { LiveAlert, LiveStatus } from "../components/LiveRegion";
 import { SEO } from "../components/SEO";
 import { UploadZone } from "../components/upload-zone";
+
+/**
+ * Lazy-load ResultViewer — it pulls in `mermaid` (~1.5 MB) which is only
+ * needed after the user has triggered an analysis. Loading it dynamically
+ * keeps it out of the initial JS bundle.
+ *
+ * Resolves #686 — Optimize bundle size.
+ */
+const ResultViewer = dynamic(
+  () => import("../components/Resultviewer").then((m) => ({ default: m.ResultViewer })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-32 items-center justify-center text-sm text-slate-500">
+        Loading result viewer…
+      </div>
+    ),
+  },
+);
 import { analyzeService } from "../lib/api";
 import { trackTelemetryEvent } from "../lib/telemetry";
 import { contractIds } from "../lib/contracts.config";
@@ -32,6 +52,17 @@ export default function Home() {
   const [currentResult, setCurrentResult] = useState<InvocationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [wasmData, setWasmData] = useState<string | null>(null);
+
+  // WEB-16 (#470): loading and outcome changes are announced to screen
+  // readers through live regions (see components/LiveRegion.tsx). Derived
+  // from state, so the announcement always matches what is on screen.
+  const analysisStatusMessage = loading
+    ? t("a11y.analysisRunning")
+    : currentResult
+      ? t("a11y.resultReady", {
+          outcome: currentResult.success ? t("result.success") : t("result.error"),
+        })
+      : "";
 
   useEffect(() => {
     setCurrentResult(null);
@@ -132,7 +163,7 @@ export default function Home() {
       />
 
       <div className="w-full max-w-7xl px-4 py-8">
-        <header className="mb-8 flex items-center justify-between">
+        <header className="mb-8 flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
           <h1 className="text-2xl font-bold text-sky-400">{t("home.title")}</h1>
           <ConnectButton />
         </header>
@@ -154,6 +185,20 @@ export default function Home() {
               selectedFunction={selectedFunction}
               onSimulate={handleSimulate}
               isLoading={loading}
+            />
+            {/* WEB-16 (#470): announce analysis progress and outcomes. */}
+            <LiveStatus
+              message={analysisStatusMessage}
+              label={t("a11y.statusRegionLabel")}
+              data-testid="analysis-live-status"
+            />
+            <LiveAlert
+              message={
+                currentResult && !currentResult.success
+                  ? (currentResult.error ?? t("a11y.analysisFailed"))
+                  : ""
+              }
+              data-testid="analysis-live-alert"
             />
             {currentResult && (
               <ErrorBoundary>
