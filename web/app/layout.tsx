@@ -1,19 +1,5 @@
-/**
- * Root App Router layout.
- *
- * MIGRATION STATUS: Foundation only — pages/ router still active.
- * This file establishes the App Router structure for future migration.
- *
- * To complete migration:
- * 1. Move pages/ files to app/ incrementally
- * 2. Convert _app.tsx providers to this layout
- * 3. Convert next/head usage to metadata exports
- * 4. Remove pages/ when all routes migrated
- *
- * See MIGRATION.md for detailed plan.
- */
-
 import type { Metadata } from 'next';
+import '../styles/globals.css';
 import type { ReactNode } from 'react';
 import { Inter } from 'next/font/google';
 import { NetworkStatusBanner } from '@/components/NetworkStatusBanner';
@@ -42,15 +28,11 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: {
-    template: '%s | Perigee',
-    default: 'Perigee - Soroban Smart Contract Resource Analyzer',
-  },
-  description:
-    'Explore, test, and analyze the CPU, RAM, and ledger footprint of Soroban smart contracts.',
+  title: 'Perigee',
+  description: 'Autonomous portfolio agents for Stellar',
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={inter.variable}>
       <body>
