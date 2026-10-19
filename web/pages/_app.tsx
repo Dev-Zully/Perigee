@@ -93,8 +93,43 @@ export default function App({ Component, pageProps }: AppProps) {
   }, []);
 
   const router = useRouter();
+  const route = router.asPath || "/";
 
   return (
+    <NextIntlClientProvider
+      locale={router?.locale ?? "en"}
+      messages={pageProps.messages ?? {}}
+      timeZone="UTC"
+    >
+      <ErrorBoundary
+        variant="root"
+        context={{
+          route,
+          component: "AppShell",
+        }}
+        title="We hit an unexpected error"
+        description="The application encountered a critical rendering issue. You can retry without losing your session."
+      >
+        <WalletProvider>
+          {/* Network status and API availability (#109) */}
+          <NetworkStatusBanner apiUrl={API_URL} />
+          {/* Graceful RPC fallback — shown when the backend is unreachable (#115) */}
+          <RpcFallbackBanner apiUrl={API_URL} />
+          <ErrorBoundary
+            variant="route"
+            context={{
+              route,
+              component: Component.displayName ?? "RouteBoundary",
+            }}
+            title="This page failed to load"
+            description="This page hit an unexpected rendering error. Try again or reload to recover the page state."
+          >
+            <Component {...pageProps} />
+            <Analytics />
+          </ErrorBoundary>
+        </WalletProvider>
+      </ErrorBoundary>
+    </NextIntlClientProvider>
     <div className={inter.className}>
       <MotionProvider>
         <LocaleSync>

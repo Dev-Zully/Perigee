@@ -152,31 +152,72 @@ export default function Home() {
   const functionList = useMemo(() => MOCK_CONTRACT_FUNCTIONS, []);
 
   return (
-    <main className="flex min-h-screen flex-col items-center bg-slate-950 text-slate-100">
-      <Head>
-        <link rel="icon" href="/favicon.ico" />
-      </Head>
-      <SEO
-        title={t("home.heading")}
-        description={t("home.description")}
-        path="/"
-      />
+    <ErrorBoundary
+      variant="route"
+      context={{
+        route: "/",
+        component: "HomePage",
+        props: {
+          contractId,
+          selectedFunction: selectedFunction.name,
+          hasResult: Boolean(currentResult),
+        },
+      }}
+      title="This dashboard failed to load"
+      description="The dashboard could not render correctly. Try again to recover the page state."
+    >
+      <main className="flex min-h-screen flex-col items-center bg-slate-950 text-slate-100">
+        <Head>
+          <link rel="icon" href="/favicon.ico" />
+        </Head>
+        <SEO
+          title={t("home.heading")}
+          description={t("home.description")}
+          path="/"
+        />
 
-      <div className="w-full max-w-7xl px-4 py-8">
-        <header className="mb-8 flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-          <h1 className="text-2xl font-bold text-sky-400">{t("home.title")}</h1>
-          <ConnectButton />
-        </header>
+        <div className="w-full max-w-7xl px-4 py-8">
+          <header className="mb-8 flex items-center justify-between">
+            <h1 className="text-2xl font-bold text-sky-400">{t("home.title")}</h1>
+            <ConnectButton />
+          </header>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_1fr]">
-          <aside>
-            <FunctionSidebar
-              functions={functionList}
-              selected={selectedFunction}
-              onSelect={handleSelectFunction}
-            />
-          </aside>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_1fr]">
+            <aside>
+              <FunctionSidebar
+                functions={functionList}
+                selected={selectedFunction}
+                onSelect={handleSelectFunction}
+              />
+            </aside>
 
+            <div className="flex flex-col gap-6">
+              <UploadZone onUpload={handleWasmUpload} />
+              <ContractInteraction
+                contractId={contractId}
+                onContractIdChange={setContractId}
+                selectedFunction={selectedFunction}
+                onSimulate={handleSimulate}
+                isLoading={loading}
+              />
+              {currentResult && (
+                <ErrorBoundary
+                  variant="component"
+                  context={{
+                    route: "/",
+                    component: "ResultViewer",
+                    props: {
+                      functionName: currentResult.functionName,
+                      success: currentResult.success,
+                    },
+                  }}
+                  title="The result panel failed to load"
+                  description="The analysis result could not be displayed, but the rest of the dashboard remains available."
+                >
+                  <ResultViewer result={currentResult} />
+                </ErrorBoundary>
+              )}
+            </div>
           <div className="flex flex-col gap-6">
             <UploadZone onUpload={handleWasmUpload} />
             <ContractInteraction
@@ -207,7 +248,7 @@ export default function Home() {
             )}
           </div>
         </div>
-      </div>
-    </main>
+      </main>
+    </ErrorBoundary>
   );
 }
