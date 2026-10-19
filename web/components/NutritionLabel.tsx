@@ -18,7 +18,7 @@ interface NutritionLabelProps {
     transaction_size_bytes: number;
 }
 
-export const NutritionLabel: React.FC<NutritionLabelProps> = ({
+const NutritionLabelImpl: React.FC<NutritionLabelProps> = ({
     cpu_instructions,
     ram_bytes,
     ledger_read_bytes,
@@ -82,31 +82,42 @@ export const NutritionLabel: React.FC<NutritionLabelProps> = ({
     };
 
     return (
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 sm:p-6 font-mono">
+        <div
+            className="bg-[#161b22] border border-[#30363d] rounded-lg p-4 sm:p-6 font-mono"
+            role="table"
+            aria-label="Contract resource consumption summary showing CPU, memory, and ledger usage per transaction"
+        >
             <div className="border-b-2 border-[#30363d] pb-2 mb-4 flex flex-wrap justify-between items-end gap-2">
                 <h2 className="text-xl sm:text-2xl font-black text-[#c9d1d9] uppercase tracking-wider">Nutrition Facts</h2>
                 <span className="text-xs text-[#8b949e]">Per Transaction</span>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-4" role="rowgroup">
                 {metrics.map((metric) => {
                     const percentage = Math.min((metric.value / metric.max) * 100, 100);
 
                     return (
-                        <div key={metric.label} className="group">
+                        <div key={metric.label} className="group" role="row">
                             <div className="flex justify-between items-center mb-1">
-                                <div className="flex items-center gap-2 text-[#c9d1d9]">
-                                    <metric.icon size={16} className="text-[#8b949e]" />
+                                <div className="flex items-center gap-2 text-[#c9d1d9]" role="cell">
+                                    <metric.icon size={16} className="text-[#8b949e]" aria-hidden="true" />
                                     <span className="font-bold text-sm">{metric.label}</span>
                                 </div>
-                                <div className="text-right">
+                                <div className="text-right" role="cell">
                                     <span className="font-bold text-[#c9d1d9]">{formatNumber(metric.value)}</span>
                                     <span className="text-xs text-[#8b949e] ml-1">{metric.unit}</span>
                                 </div>
                             </div>
 
                             {/* Progress Bar Container */}
-                            <div className="h-2 w-full bg-[#0d1117] rounded-full overflow-hidden border border-[#30363d]">
+                            <div
+                                className="h-2 w-full bg-[#0d1117] rounded-full overflow-hidden border border-[#30363d]"
+                                role="progressbar"
+                                aria-valuenow={Math.round(percentage)}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-label={`${metric.label} usage: ${percentage.toFixed(1)}% of limit`}
+                            >
                                 <div
                                     className="h-full rounded-full transition-all duration-500 ease-out"
                                     style={{
@@ -133,3 +144,6 @@ export const NutritionLabel: React.FC<NutritionLabelProps> = ({
         </div>
     );
 };
+
+/** Memoised (#692): pure presentational component, re-renders only when props change. */
+export const NutritionLabel = React.memo(NutritionLabelImpl);

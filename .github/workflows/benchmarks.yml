@@ -1,0 +1,74 @@
+name: Benchmarks
+
+# BE-047 (#284): run `cargo bench` in CI, compare against a baseline, and fail
+# the build when any benchmark regresses by more than 10%. Results are
+# published to the job summary (a lightweight dashboard).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "core/**"
+      - ".github/workflows/benchmarks.yml"
+      - "scripts/benchmark_guard.py"
+  pull_request:
+    paths:
+      - "core/**"
+      - ".github/workflows/benchmarks.yml"
+      - "scripts/benchmark_guard.py"
+
+permissions:
+  contents: write # needed to commit the refreshed baseline back on `main`
+
+jobs:
+  bench:
+    name: Run benchmarks & guard regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so we can commit the baseline back
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Run benchmarks
+        # Criterion writes per-benchmark estimates under target/criterion which
+        # the guard script reads. We let the run fail loudly if the benchmarks
+        # themselves do not build/run.
+        run: cargo bench -p Perigee-core
+
+      - name: Guard regressions & publish dashboard
+        run: python3 scripts/benchmark_guard.py core/benches/baseline.json 10
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-estimates
+          path: target/criterion
+          retention-days: 7
+
+      - name: Commit refreshed baseline (main only)
+        # Keeps the reference numbers current so PRs are compared against the
+        # latest main. Skipped on pull_request events.
+        if: github.ref == 'refs/heads/main' && success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add core/benches/baseline.json
+          if git diff --cached --quiet; then
+            echo "No baseline changes to commit"
+          else
+            git commit -m "chore: refresh benchmark baseline [skip ci]"
+            git push
+          fi

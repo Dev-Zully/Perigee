@@ -12,6 +12,7 @@
 //! (weighted round-robin) that the registry may adopt later.
 
 use crate::rpc_provider::MIN_SAMPLES_FOR_EMA;
+use thiserror::Error;
 
 /// View of one provider that the routing algorithms care about. All
 /// pure functions in this module take slices of `ProviderView`, which
@@ -89,8 +90,83 @@ pub fn compute_inverse_rtt_weights(providers: &[ProviderView<'_>]) -> Vec<u64> {
         return Vec::new();
     }
 
-    let max_rtt = *rtts.iter().max().unwrap();
+    // SAFETY: we just checked that `rtts` is non-empty above, so `max()`
+    // is guaranteed to return `Some`. The `unwrap_or(1)` is unreachable but
+    // keeps the compiler happy without the clippy::unwrap_used lint firing.
+    let max_rtt = *rtts.iter().max().unwrap_or(&1);
     rtts.into_iter().map(|r| max_rtt / r).collect()
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// AMM swap-route selection
+// ──────────────────────────────────────────────────────────────────────────
+//
+// Stellar AMM pools expose a constant-product curve.  When the strategy
+// agent needs to rotate between assets it must pick the best pool from the
+// set of candidate pools that connect the two assets.
+//
+// A pool is *eligible* only when both reserves are strictly positive.
+// Dividing by a zero reserve (the constant-product formula contains
+// `reserve_in` in the denominator) would cause an integer overflow or
+// division-by-zero panic — this is the root cause of BE-031.
+//
+// Selection criterion: highest `reserve_out` among eligible pools, which
+// is a reasonable proxy for depth / lowest-slippage without requiring the
+// caller to supply an exact input amount.
+
+/// Errors that can be returned by the AMM routing layer.
+#[derive(Error, Debug, PartialEq)]
+pub enum RoutingError {
+    /// No eligible pool could be found for the requested swap. Either no
+    /// pools were supplied, or every candidate pool has zero liquidity and
+    /// was therefore skipped to prevent a division-by-zero panic.
+    #[error("no route available: all candidate pools have zero liquidity")]
+    NoRouteAvailable,
+}
+
+/// A snapshot of one AMM pool as seen by the routing algorithm.
+///
+/// `reserve_in` and `reserve_out` are the on-chain reserve amounts for the
+/// input and output token respectively, expressed in the token's native
+/// integer unit (e.g. stroops for XLM-denominated pairs).
+///
+/// Both values **must** be the raw, non-scaled reserves that appear in the
+/// constant-product formula `Δout = reserve_out * Δin / (reserve_in + Δin)`.
+#[derive(Debug, Clone, Copy)]
+pub struct PoolView {
+    /// Unique identifier for the pool (e.g. contract address or a numeric ID
+    /// used by the caller to look up the full pool record).
+    pub id: u64,
+    /// Reserve of the input token held by this pool.
+    pub reserve_in: u128,
+    /// Reserve of the output token held by this pool.
+    pub reserve_out: u128,
+}
+
+/// Return the index (into `pools`) of the best pool for a swap, or
+/// [`RoutingError::NoRouteAvailable`] when no eligible pool exists.
+///
+/// **Zero-liquidity guard (BE-031):** any pool whose `reserve_in` **or**
+/// `reserve_out` is zero is silently skipped.  Using such a pool would
+/// require dividing by zero in the constant-product formula and would
+/// produce a meaningless output amount.
+///
+/// Among the remaining eligible pools the one with the **highest
+/// `reserve_out`** is returned, which minimises price impact for the
+/// caller's swap.  Ties are broken by the lowest index so that behaviour
+/// is deterministic.
+pub fn best_pool_for_swap(pools: &[PoolView]) -> Result<usize, RoutingError> {
+    let best = pools
+        .iter()
+        .enumerate()
+        // BE-031: skip pools with zero reserves to prevent division by zero.
+        .filter(|(_, p)| p.reserve_in > 0 && p.reserve_out > 0)
+        .max_by_key(|(i, p)| (p.reserve_out, usize::MAX - i));
+
+    match best {
+        Some((idx, _)) => Ok(idx),
+        None => Err(RoutingError::NoRouteAvailable),
+    }
 }
 
 #[cfg(test)]
@@ -213,5 +289,85 @@ mod tests {
         let weights = compute_inverse_rtt_weights(&pool);
         assert_eq!(weights.len(), 2);
         assert!(weights[0] >= weights[1]);
+    }
+
+    // ── AMM swap-route tests (BE-031) ──────────────────────────────────────
+
+    fn pool(id: u64, reserve_in: u128, reserve_out: u128) -> PoolView {
+        PoolView { id, reserve_in, reserve_out }
+    }
+
+    /// A slice containing only a single pool with both reserves at zero must
+    /// return `NoRouteAvailable` — the core regression for BE-031.
+    #[test]
+    fn single_zero_liquidity_pool_returns_no_route() {
+        let pools = [pool(1, 0, 0)];
+        assert_eq!(
+            best_pool_for_swap(&pools),
+            Err(RoutingError::NoRouteAvailable)
+        );
+    }
+
+    /// An empty candidate list also has no route.
+    #[test]
+    fn empty_pool_list_returns_no_route() {
+        assert_eq!(
+            best_pool_for_swap(&[]),
+            Err(RoutingError::NoRouteAvailable)
+        );
+    }
+
+    /// A pool where only `reserve_in` is zero must be skipped.
+    #[test]
+    fn pool_with_zero_reserve_in_is_skipped() {
+        // Pool 1: reserve_in=0 (ineligible). Pool 2: healthy.
+        let pools = [pool(1, 0, 1_000), pool(2, 500, 800)];
+        assert_eq!(best_pool_for_swap(&pools), Ok(1));
+    }
+
+    /// A pool where only `reserve_out` is zero must be skipped.
+    #[test]
+    fn pool_with_zero_reserve_out_is_skipped() {
+        // Pool 1: reserve_out=0 (ineligible). Pool 2: healthy.
+        let pools = [pool(1, 1_000, 0), pool(2, 500, 800)];
+        assert_eq!(best_pool_for_swap(&pools), Ok(1));
+    }
+
+    /// When all pools have zero liquidity the function returns `NoRouteAvailable`.
+    #[test]
+    fn all_zero_liquidity_pools_return_no_route() {
+        let pools = [pool(1, 0, 0), pool(2, 0, 0), pool(3, 0, 0)];
+        assert_eq!(
+            best_pool_for_swap(&pools),
+            Err(RoutingError::NoRouteAvailable)
+        );
+    }
+
+    /// Among eligible pools the one with the deepest `reserve_out` is picked
+    /// (lower price impact for the swapper).
+    #[test]
+    fn best_pool_is_the_one_with_highest_reserve_out() {
+        let pools = [
+            pool(1, 1_000, 500),
+            pool(2, 1_000, 2_000), // <-- deepest out
+            pool(3, 1_000, 800),
+        ];
+        assert_eq!(best_pool_for_swap(&pools), Ok(1));
+    }
+
+    /// Ties on `reserve_out` are broken by the lowest index so behaviour is
+    /// deterministic across repeated calls.
+    #[test]
+    fn ties_on_reserve_out_broken_by_lowest_index() {
+        let pools = [pool(1, 500, 1_000), pool(2, 600, 1_000)];
+        assert_eq!(best_pool_for_swap(&pools), Ok(0));
+    }
+
+    /// The zero-liquidity pool is skipped and the single healthy pool wins,
+    /// even though the healthy pool comes after the bad one.
+    #[test]
+    fn zero_liquidity_pool_skipped_healthy_pool_wins() {
+        let pools = [pool(1, 0, 0), pool(2, 400, 300)];
+        assert_eq!(best_pool_for_swap(&pools), Ok(1));
     }
 }

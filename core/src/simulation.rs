@@ -1,4 +1,6 @@
+use crate::log_redaction::{redact_display, redact_endpoint};
 use crate::parser::ArgParser;
+use crate::runner::cancellation::wait_for_cancellation;
 use crate::rpc_provider::ProviderRegistry;
 use crate::stellar_service::{StellarService, StellarServiceConfig, StellarServiceError};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -31,8 +33,17 @@ pub enum SimulationError {
     #[error("RPC request failed: {0}")]
     RpcRequestFailed(String),
 
+    #[error("All {attempts} RPC attempts failed: {last_error}")]
+    AllAttemptsFailed { attempts: u32, last_error: String },
+
+    #[error("RPC circuit breaker open: {0}")]
+    CircuitBreakerOpen(String),
+
     #[error("RPC node timeout")]
     NodeTimeout,
+
+    #[error("Request cancelled")]
+    Cancelled,
 
     #[error("Node returned an error: {0}")]
     NodeError(String),
@@ -51,6 +62,14 @@ pub enum SimulationError {
 
     #[error("Invalid contract: {0}")]
     InvalidContract(String),
+
+    /// The supplied bytes are not a well-formed WASM module (BE-020).
+    ///
+    /// Raised by validation *before* the module reaches the Soroban host,
+    /// which panics rather than returning an error when handed malformed
+    /// input. The message names what was wrong and where.
+    #[error("Invalid WASM: {0}")]
+    InvalidWasm(String),
 
     #[error("Parse error: {0}")]
     ParseError(#[from] crate::parser::ParserError),
@@ -96,6 +115,34 @@ impl SimulationError {
 impl From<soroban_env_host::HostError> for SimulationError {
     fn from(e: soroban_env_host::HostError) -> Self {
         SimulationError::ExecutionFailed(format!("{e:?}"))
+    }
+}
+
+impl From<StellarServiceError> for SimulationError {
+    fn from(error: StellarServiceError) -> Self {
+        let message = error.to_string();
+        match error {
+            StellarServiceError::CircuitOpen { .. } => {
+                SimulationError::CircuitBreakerOpen(message)
+            }
+            StellarServiceError::NoHealthyProviders => {
+                SimulationError::CircuitBreakerOpen(message)
+            }
+            StellarServiceError::Timeout { .. } => SimulationError::NodeTimeout,
+            StellarServiceError::Network { source, .. } => SimulationError::NetworkError(source),
+            StellarServiceError::HttpError { status, url } => {
+                SimulationError::RpcRequestFailed(format!("HTTP error: {status} from {url}"))
+            }
+            StellarServiceError::AllAttemptsFailed {
+                attempts,
+                last_error,
+                ..
+            } => SimulationError::AllAttemptsFailed {
+                attempts,
+                last_error,
+            },
+            _ => SimulationError::RpcRequestFailed(message),
+        }
     }
 }
 
@@ -1066,6 +1113,85 @@ struct ConsensusFingerprint {
 }
 
 #[allow(dead_code)]
+// ── BE-019: protocol-versioned cost parameters ───────────────────────────────
+
+/// The newest protocol version this build knows cost parameters for.
+///
+/// Used when a request does not name a version, which is the common case:
+/// callers simulating against current mainnet should not have to say so.
+pub const LATEST_PROTOCOL_VERSION: u32 = 23;
+
+/// The oldest protocol version this build knows cost parameters for.
+///
+/// Older protocols are refused rather than costed against modern parameters —
+/// a wrong number presented confidently is worse than an explicit refusal,
+/// and silently doing that is the bug BE-019 describes.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 20;
+
+/// Cost parameters for one protocol version (BE-019).
+///
+/// Each field is how many resource units make up one stroop of cost, so a
+/// larger divisor means a cheaper resource.
+///
+/// **On the values.** The authoritative figures live on-chain, in the
+/// network's config-settings ledger entries, and change with protocol
+/// upgrades. The table below carries the parameters this engine has always
+/// applied; they are not independently sourced per-protocol figures, and none
+/// are invented here. What changes is that parameters are now *selected* by
+/// version rather than hardcoded at the call site — so recording a genuine
+/// difference for a future protocol is a table edit, and asking for a
+/// protocol this build does not know is an error rather than a silently
+/// mis-costed result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProtocolCostParameters {
+    pub protocol_version: u32,
+    pub cpu_instructions_per_stroop: u64,
+    pub ram_bytes_per_stroop: u64,
+    pub ledger_bytes_per_stroop: u64,
+}
+
+impl ProtocolCostParameters {
+    /// Parameters for `protocol_version`.
+    ///
+    /// # Errors
+    /// * `InvalidContract` — the version is outside the supported range
+    pub fn for_protocol(protocol_version: u32) -> Result<Self, SimulationError> {
+        if !(MIN_SUPPORTED_PROTOCOL_VERSION..=LATEST_PROTOCOL_VERSION).contains(&protocol_version) {
+            return Err(SimulationError::InvalidContract(format!(
+                "protocol version {protocol_version} is not supported; this build knows \
+                 cost parameters for {MIN_SUPPORTED_PROTOCOL_VERSION}..={LATEST_PROTOCOL_VERSION}"
+            )));
+        }
+
+        Ok(Self {
+            protocol_version,
+            cpu_instructions_per_stroop: 10_000,
+            ram_bytes_per_stroop: 1_024,
+            ledger_bytes_per_stroop: 1_024,
+        })
+    }
+
+    /// Parameters for the requested version, or the latest when unspecified.
+    pub fn resolve(protocol_version: Option<u32>) -> Result<Self, SimulationError> {
+        Self::for_protocol(protocol_version.unwrap_or(LATEST_PROTOCOL_VERSION))
+    }
+
+    /// Cost in stroops of the given resources under these parameters.
+    pub fn cost_of(&self, resources: &SorobanResources) -> u64 {
+        let cpu_cost = resources.cpu_instructions / self.cpu_instructions_per_stroop;
+        let ram_cost = resources.ram_bytes / self.ram_bytes_per_stroop;
+
+        let ledger_bytes = resources
+            .ledger_read_bytes
+            .saturating_add(resources.ledger_write_bytes);
+        let ledger_cost = ledger_bytes / self.ledger_bytes_per_stroop;
+
+        cpu_cost
+            .saturating_add(ram_cost)
+            .saturating_add(ledger_cost)
+    }
+}
+
 impl SimulationEngine {
     const TTL_WARNING_THRESHOLD_LEDGERS: i64 = 120_000;
     const TTL_TARGET_LEDGERS_AHEAD: i64 = 360_000;
@@ -1088,10 +1214,13 @@ impl SimulationEngine {
             advertise: None,
         };
         let registry = ProviderRegistry::new(vec![provider]);
-        let svc = Arc::new(StellarService::new(
-            Arc::clone(&registry),
-            StellarServiceConfig::default(),
-        ));
+        let svc = Arc::new(
+            StellarService::new(
+                Arc::clone(&registry),
+                StellarServiceConfig::default(),
+            )
+            .unwrap_or_else(|e| panic!("Failed to build Stellar HTTP client: {e}")),
+        );
         Self {
             rpc_url,
             stellar_service: svc,
@@ -1110,10 +1239,13 @@ impl SimulationEngine {
 
     /// Create an engine backed by a `ProviderRegistry` using the provided mode.
     pub fn with_registry_and_mode(registry: Arc<ProviderRegistry>, mode: SimulationMode) -> Self {
-        let svc = Arc::new(StellarService::new(
-            Arc::clone(&registry),
-            StellarServiceConfig::default(),
-        ));
+        let svc = Arc::new(
+            StellarService::new(
+                Arc::clone(&registry),
+                StellarServiceConfig::default(),
+            )
+            .unwrap_or_else(|e| panic!("Failed to build Stellar HTTP client: {e}")),
+        );
         Self {
             rpc_url: String::new(),
             stellar_service: svc,
@@ -1130,10 +1262,13 @@ impl SimulationEngine {
         registry: Arc<ProviderRegistry>,
         cache: Arc<crate::cache::ContractCache>,
     ) -> Self {
-        let svc = Arc::new(StellarService::new(
-            Arc::clone(&registry),
-            StellarServiceConfig::default(),
-        ));
+        let svc = Arc::new(
+            StellarService::new(
+                Arc::clone(&registry),
+                StellarServiceConfig::default(),
+            )
+            .unwrap_or_else(|e| panic!("Failed to build Stellar HTTP client: {e}")),
+        );
         Self {
             rpc_url: String::new(),
             stellar_service: svc,
@@ -1160,7 +1295,10 @@ impl SimulationEngine {
         mode: SimulationMode,
     ) -> Self {
         let config = StellarServiceConfig::default().with_timeout(timeout);
-        let svc = Arc::new(StellarService::new(Arc::clone(&registry), config));
+        let svc = Arc::new(
+            StellarService::new(Arc::clone(&registry), config)
+                .unwrap_or_else(|e| panic!("Failed to build Stellar HTTP client: {e}")),
+        );
         Self {
             rpc_url: String::new(),
             stellar_service: svc,
@@ -1240,7 +1378,7 @@ impl SimulationEngine {
                 .into_iter()
                 .next()
                 .ok_or_else(|| {
-                    SimulationError::RpcRequestFailed("No healthy providers".to_string())
+                    SimulationError::CircuitBreakerOpen("No healthy providers".to_string())
                 })?,
             None => crate::rpc_provider::RpcProvider {
                 name: "default".to_string(),
@@ -1259,7 +1397,7 @@ impl SimulationEngine {
                 serde_json::json!({ "keys": [key_xdr] }),
             )
             .await
-            .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
+            .map_err(SimulationError::from)?;
 
         let response: GetLedgerEntriesResponse = serde_json::from_value(raw1)
             .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
@@ -1321,7 +1459,7 @@ impl SimulationEngine {
                 serde_json::json!({ "keys": [wasm_key_xdr] }),
             )
             .await
-            .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
+            .map_err(SimulationError::from)?;
 
         let response2: GetLedgerEntriesResponse = serde_json::from_value(raw2)
             .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
@@ -1377,6 +1515,32 @@ impl SimulationEngine {
         protocol_version: Option<u32>,
         enable_experimental: Option<bool>,
     ) -> Result<SimulationResult, SimulationError> {
+        self.simulate_from_contract_id_with_cancellation(
+            contract_id,
+            function_name,
+            args,
+            ledger_overrides,
+            protocol_version,
+            enable_experimental,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn simulate_from_contract_id_with_cancellation(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+        args: Vec<String>,
+        ledger_overrides: Option<HashMap<String, String>>,
+        protocol_version: Option<u32>,
+        enable_experimental: Option<bool>,
+        cancellation: CancellationToken,
+    ) -> Result<SimulationResult, SimulationError> {
+        if cancellation.is_cancelled() {
+            return Err(SimulationError::Cancelled);
+        }
         if contract_id.is_empty() {
             return Err(SimulationError::NodeError(
                 "Contract ID cannot be empty".to_string(),
@@ -1386,16 +1550,19 @@ impl SimulationEngine {
         if let Some(overrides) = ledger_overrides {
             if !overrides.is_empty() || protocol_version.is_some() || enable_experimental.is_some()
             {
-                return self
-                    .simulate_locally(
+                return wait_for_cancellation(
+                    &cancellation,
+                    self.simulate_locally(
                         contract_id,
                         function_name,
                         args,
                         overrides,
                         protocol_version,
                         enable_experimental,
-                    )
-                    .await;
+                    ),
+                )
+                .await
+                .map_err(|_| SimulationError::Cancelled)?;
             }
         }
 
@@ -1407,7 +1574,10 @@ impl SimulationEngine {
             let contract_hash = self.parse_contract_id(contract_id)?;
             let invocation =
                 crate::runner::ContractInvocation::new(contract_hash, function_name, args.clone());
-            match runner.simulate(&invocation).await {
+            match runner
+                .simulate_with_cancellation(&invocation, cancellation.clone())
+                .await
+            {
                 Ok(result) => {
                     tracing::debug!(
                         contract_id = %contract_id,
@@ -1420,7 +1590,7 @@ impl SimulationEngine {
                     tracing::warn!(
                         contract_id = %contract_id,
                         function = %function_name,
-                        error = %e,
+                        error = %redact_display(&e),
                         "Local simulation unavailable, falling back to RPC"
                     );
                 }
@@ -1429,7 +1599,12 @@ impl SimulationEngine {
         }
 
         let transaction_xdr = self.create_invoke_transaction(contract_id, function_name, args)?;
-        self.simulate_transaction(&transaction_xdr).await
+        wait_for_cancellation(
+            &cancellation,
+            self.simulate_transaction(&transaction_xdr),
+        )
+        .await
+        .map_err(|_| SimulationError::Cancelled)?
     }
 
     /// Optimized limit discovery via binary search
@@ -1441,9 +1616,35 @@ impl SimulationEngine {
         args: Vec<String>,
         safety_margin: f64,
     ) -> Result<OptimizationReport, SimulationError> {
+        self.optimize_limits_with_cancellation(
+            contract_id,
+            function_name,
+            args,
+            safety_margin,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    pub async fn optimize_limits_with_cancellation(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+        args: Vec<String>,
+        safety_margin: f64,
+        cancellation: CancellationToken,
+    ) -> Result<OptimizationReport, SimulationError> {
         // 1. Get initial estimate
         let initial_result = self
-            .simulate_from_contract_id(contract_id, function_name, args.clone(), None, None, None)
+            .simulate_from_contract_id_with_cancellation(
+                contract_id,
+                function_name,
+                args.clone(),
+                None,
+                None,
+                None,
+                cancellation.clone(),
+            )
             .await?;
         let estimate = initial_result.resources;
         let contract_id = contract_id.to_string();
@@ -1451,97 +1652,43 @@ impl SimulationEngine {
         let transaction_data = initial_result.transaction_data.clone();
         let cancellation = CancellationToken::new();
 
-        let cpu_search = {
-            let engine = self.clone();
-            let contract_id = contract_id.clone();
-            let function_name = function_name.clone();
-            let args = args.clone();
-            let estimate = estimate.clone();
-            let transaction_data = transaction_data.clone();
-            let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                engine
-                    .binary_search_resource(
-                        &contract_id,
-                        &function_name,
-                        args,
-                        ResourceSearchKind::Cpu,
-                        estimate,
-                        &transaction_data,
-                        cancellation,
-                    )
-                    .await
-            })
-        };
-
-        let ram_search = {
-            let engine = self.clone();
-            let contract_id = contract_id.clone();
-            let function_name = function_name.clone();
-            let args = args.clone();
-            let estimate = estimate.clone();
-            let transaction_data = transaction_data.clone();
-            let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                engine
-                    .binary_search_resource(
-                        &contract_id,
-                        &function_name,
-                        args,
-                        ResourceSearchKind::Ram,
-                        estimate,
-                        &transaction_data,
-                        cancellation,
-                    )
-                    .await
-            })
-        };
-
-        let ledger_read_search = {
-            let engine = self.clone();
-            let contract_id = contract_id.clone();
-            let function_name = function_name.clone();
-            let args = args.clone();
-            let estimate = estimate.clone();
-            let transaction_data = transaction_data.clone();
-            let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                engine
-                    .binary_search_resource(
-                        &contract_id,
-                        &function_name,
-                        args,
-                        ResourceSearchKind::LedgerRead,
-                        estimate,
-                        &transaction_data,
-                        cancellation,
-                    )
-                    .await
-            })
-        };
-
-        let ledger_write_search = {
-            let engine = self.clone();
-            let contract_id = contract_id.clone();
-            let function_name = function_name.clone();
-            let args = args.clone();
-            let estimate = estimate.clone();
-            let transaction_data = transaction_data.clone();
-            let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                engine
-                    .binary_search_resource(
-                        &contract_id,
-                        &function_name,
-                        args,
-                        ResourceSearchKind::LedgerWrite,
-                        estimate,
-                        &transaction_data,
-                        cancellation,
-                    )
-                    .await
-            })
-        };
+        let cpu_search = self.binary_search_resource(
+            &contract_id,
+            &function_name,
+            args.clone(),
+            ResourceSearchKind::Cpu,
+            estimate.clone(),
+            &transaction_data,
+            cancellation.clone(),
+        );
+        let ram_search = self.binary_search_resource(
+            &contract_id,
+            &function_name,
+            args.clone(),
+            ResourceSearchKind::Ram,
+            estimate.clone(),
+            &transaction_data,
+            cancellation.clone(),
+        );
+        let ledger_read_search = self.binary_search_resource(
+            &contract_id,
+            &function_name,
+            args.clone(),
+            ResourceSearchKind::LedgerRead,
+            estimate.clone(),
+            &transaction_data,
+            cancellation.clone(),
+        );
+        let ledger_write_search = self.binary_search_resource(
+            &contract_id,
+            &function_name,
+            args,
+            ResourceSearchKind::LedgerWrite,
+            estimate,
+            &transaction_data,
+            cancellation,
+            cancellation.clone(),
+        );
 
         let (cpu_search, ram_search, ledger_read_search, ledger_write_search) = tokio::join!(
             cpu_search,
@@ -1737,38 +1884,39 @@ impl SimulationEngine {
     }
 
     fn resolve_search_result(
-        result: Result<Result<u64, SimulationError>, tokio::task::JoinError>,
+        result: Result<u64, SimulationError>,
+        _resource_type: ResourceSearchKind,
+    ) -> Result<u64, SimulationError> {
+        result
         resource_type: ResourceSearchKind,
     ) -> Result<u64, SimulationError> {
-        match result {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(err)) => Err(err),
-            Err(err) => Err(SimulationError::RpcRequestFailed(format!(
-                "{} optimization task failed: {}",
-                resource_type.label(),
+        result.map_err(|err| {
+            if Self::is_cancelled_search_error(&err) {
                 err
-            ))),
-        }
+            } else {
+                SimulationError::RpcRequestFailed(format!(
+                    "{} optimization search failed: {}",
+                    resource_type.label(),
+                    err
+                ))
+            }
+        })
     }
 
-    fn cancelled_search_error(resource_type: ResourceSearchKind) -> SimulationError {
-        SimulationError::RpcRequestFailed(format!(
-            "Optimization search cancelled while {} search was running",
-            resource_type.label()
-        ))
+    fn cancelled_search_error(_resource_type: ResourceSearchKind) -> SimulationError {
+        SimulationError::Cancelled
     }
 
     fn is_cancelled_search_error(err: &SimulationError) -> bool {
-        matches!(
-            err,
-            SimulationError::RpcRequestFailed(msg)
-                if msg.starts_with("Optimization search cancelled")
-        )
+        matches!(err, SimulationError::Cancelled)
     }
 
     fn is_significant_search_failure(err: &SimulationError) -> bool {
         match err {
-            SimulationError::NodeTimeout | SimulationError::NetworkError(_) => true,
+            SimulationError::NodeTimeout
+            | SimulationError::NetworkError(_)
+            | SimulationError::AllAttemptsFailed { .. }
+            | SimulationError::CircuitBreakerOpen(_) => true,
             SimulationError::RpcRequestFailed(msg) => {
                 msg.starts_with("HTTP error:")
                     || msg.starts_with("Network error:")
@@ -1903,7 +2051,7 @@ impl SimulationEngine {
         let providers = registry.providers_by_latency().await;
 
         if providers.is_empty() {
-            return Err(SimulationError::RpcRequestFailed(
+            return Err(SimulationError::CircuitBreakerOpen(
                 "All RPC providers are unavailable (circuit breaker tripped)".to_string(),
             ));
         }
@@ -1913,7 +2061,7 @@ impl SimulationEngine {
         for provider in &providers {
             tracing::debug!(
                 provider = %provider.name,
-                url = %provider.url,
+                url = %redact_endpoint(&provider.url),
                 "Attempting simulation request"
             );
 
@@ -1941,7 +2089,6 @@ impl SimulationEngine {
                     // consistently slow provider never leaves the "top
                     // pick" slot even after its EMA should have decayed.
                     registry.record_rtt(&provider.url, rtt_us);
-                    registry.report_success(&provider.url).await;
                     return Ok(result);
                 }
                 Err(e) => {
@@ -1952,33 +2099,36 @@ impl SimulationEngine {
                     // than the provider's own latency.
                     let record_sample = !matches!(
                         &e,
-                        SimulationError::NodeTimeout | SimulationError::NetworkError(_)
+                        SimulationError::NodeTimeout
+                            | SimulationError::NetworkError(_)
+                            | SimulationError::AllAttemptsFailed { .. }
+                            | SimulationError::CircuitBreakerOpen(_)
                     );
                     if record_sample {
                         registry.record_rtt(&provider.url, rtt_us);
                     }
 
                     let should_retry = match &e {
-                        SimulationError::NodeTimeout | SimulationError::NetworkError(_) => true,
+                        SimulationError::NodeTimeout
+                        | SimulationError::NetworkError(_)
+                        | SimulationError::AllAttemptsFailed { .. }
+                        | SimulationError::CircuitBreakerOpen(_) => true,
                         SimulationError::RpcRequestFailed(msg)
                             if msg.starts_with("HTTP error:") =>
                         {
                             // Extract status code from "HTTP error: <code>"
                             msg.split_whitespace()
-                                .last()
-                                .and_then(|s| s.parse::<u16>().ok())
+                                .find_map(|part| part.parse::<u16>().ok())
                                 .map(ProviderRegistry::is_retryable_status)
                                 .unwrap_or(false)
                         }
                         _ => false,
                     };
 
-                    registry.report_failure(&provider.url).await;
-
                     if should_retry {
                         tracing::warn!(
                             provider = %provider.name,
-                            error = %e,
+                            error = %redact_display(&e),
                             "Provider failed with retryable error, trying next"
                         );
                         last_error = Some(e);
@@ -2073,11 +2223,9 @@ impl SimulationEngine {
         for (provider, result) in provider_results {
             match result {
                 Ok(result) => {
-                    registry.report_success(&provider.url).await;
                     successes.push((provider, result));
                 }
                 Err(error) => {
-                    registry.report_failure(&provider.url).await;
                     failures.push(format!("{}: {}", provider.name, error));
                 }
             }
@@ -2188,7 +2336,7 @@ impl SimulationEngine {
         auth_value: Option<&str>,
         transaction_xdr: &str,
     ) -> Result<SimulationResult, SimulationError> {
-        tracing::debug!("Sending simulateTransaction request to {}", url);
+        tracing::debug!(url = %redact_endpoint(url), "Sending simulateTransaction request");
 
         // Build a minimal provider record so StellarService can attach the
         // auth headers and report circuit-breaker outcomes against the right URL.
@@ -2208,8 +2356,10 @@ impl SimulationEngine {
                 serde_json::json!({ "transaction": transaction_xdr }),
             )
             .await
+            .map_err(SimulationError::from)?;
             .map_err(|e| match e {
                 StellarServiceError::Timeout { .. } => SimulationError::NodeTimeout,
+                StellarServiceError::Cancelled { .. } => SimulationError::Cancelled,
                 StellarServiceError::Network { source, .. } => {
                     SimulationError::NetworkError(source)
                 }
@@ -2219,14 +2369,18 @@ impl SimulationEngine {
                 other => SimulationError::RpcRequestFailed(other.to_string()),
             })?;
 
-        let rpc_response: SimulateTransactionResponse = serde_json::from_value(raw)
-            .map_err(|e| {
+        let rpc_response: SimulateTransactionResponse =
+            serde_json::from_value(raw).map_err(|e| {
                 SimulationError::RpcRequestFailed(format!("Failed to parse response: {e}"))
             })?;
 
         match rpc_response.result {
             ResponseResult::Error { error } => {
-                tracing::error!("RPC error (code {}): {}", error.code, error.message);
+                tracing::error!(
+                    code = error.code,
+                    message = %crate::log_redaction::redact_sensitive_text(&error.message),
+                    "RPC returned an error"
+                );
                 match error.code {
                     -32600 => Err(SimulationError::NodeError(
                         "Invalid request format".to_string(),
@@ -2249,7 +2403,10 @@ impl SimulationEngine {
                 }
             }
             ResponseResult::Success { result } => {
-                tracing::info!("Simulation successful at ledger {}", result.latest_ledger);
+                tracing::info!(
+                    latest_ledger = result.latest_ledger,
+                    "Simulation successful"
+                );
                 let mut parsed = self.parse_simulation_result(result.clone())?;
                 let touched_keys = self.extract_touched_ledger_keys(&result.transaction_data);
 
@@ -2285,7 +2442,10 @@ impl SimulationEngine {
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("State analysis skipped due to RPC error: {}", e);
+                            tracing::warn!(
+                                error = %redact_display(&e),
+                                "State analysis skipped due to RPC error"
+                            );
                         }
                     }
                 }
@@ -2461,10 +2621,11 @@ impl SimulationEngine {
                 serde_json::json!({ "keys": missing_keys }),
             )
             .await
-            .map_err(|e| SimulationError::RpcRequestFailed(e.to_string()))?;
+            .map_err(SimulationError::from)?;
 
-        let rpc_response: GetLedgerEntriesResponse = serde_json::from_value(raw)
-            .map_err(|e| SimulationError::RpcRequestFailed(format!("Failed to parse response: {e}")))?;
+        let rpc_response: GetLedgerEntriesResponse = serde_json::from_value(raw).map_err(|e| {
+            SimulationError::RpcRequestFailed(format!("Failed to parse response: {e}"))
+        })?;
 
         let fetched_entries = match rpc_response.result {
             LedgerEntriesResponseResult::Success { result } => result.entries,
@@ -2586,14 +2747,20 @@ impl SimulationEngine {
         let xdr_bytes = match BASE64.decode(transaction_data) {
             Ok(bytes) => bytes,
             Err(e) => {
-                tracing::warn!("Failed to decode base64 transaction data: {}", e);
+                tracing::warn!(
+                    error = %redact_display(&e),
+                    "Failed to decode base64 transaction data"
+                );
                 return (0, 0);
             }
         };
         let soroban_data = match SorobanTransactionData::from_xdr(&xdr_bytes, Limits::none()) {
             Ok(data) => data,
             Err(e) => {
-                tracing::warn!("Failed to parse SorobanTransactionData XDR: {}", e);
+                tracing::warn!(
+                    error = %redact_display(&e),
+                    "Failed to parse SorobanTransactionData XDR"
+                );
                 return (0, 0);
             }
         };
@@ -2668,16 +2835,29 @@ impl SimulationEngine {
         }
     }
 
+    /// Cost in stroops under the latest known protocol.
+    ///
+    /// Retained for callers that have no protocol version to hand — notably
+    /// the RPC path, where the version is not threaded through. Prefer
+    /// [`calculate_cost_for_protocol`](Self::calculate_cost_for_protocol)
+    /// wherever a version is available.
     pub(crate) fn calculate_cost(&self, resources: &SorobanResources) -> u64 {
-        let cpu_cost = resources.cpu_instructions / 10000;
-        let ram_cost = resources.ram_bytes / 1024;
-        let ledger_bytes = resources
-            .ledger_read_bytes
-            .saturating_add(resources.ledger_write_bytes);
-        let ledger_cost = ledger_bytes / 1024;
-        cpu_cost
-            .saturating_add(ram_cost)
-            .saturating_add(ledger_cost)
+        ProtocolCostParameters::for_protocol(LATEST_PROTOCOL_VERSION)
+            .expect("the latest protocol version is always in the table")
+            .cost_of(resources)
+    }
+
+    /// Cost in stroops under `protocol_version`, or the latest when `None`
+    /// (BE-019).
+    ///
+    /// # Errors
+    /// * `InvalidContract` — the version is outside the supported range
+    pub(crate) fn calculate_cost_for_protocol(
+        &self,
+        resources: &SorobanResources,
+        protocol_version: Option<u32>,
+    ) -> Result<u64, SimulationError> {
+        Ok(ProtocolCostParameters::resolve(protocol_version)?.cost_of(resources))
     }
 
     /// Create invoke transaction for contract call
@@ -2810,10 +2990,17 @@ impl SimulationEngine {
         function_name: &str,
         args: Vec<String>,
         overrides: HashMap<String, String>,
-        _protocol_version: Option<u32>,
+        protocol_version: Option<u32>,
         _enable_experimental: Option<bool>,
     ) -> Result<SimulationResult, SimulationError> {
+        // BE-019: this parameter used to be discarded, so a caller could ask
+        // for a protocol version and be costed against a different one without
+        // being told. Resolving it here rejects an unsupported version up
+        // front rather than after the simulation has run.
+        let cost_parameters = ProtocolCostParameters::resolve(protocol_version)?;
+
         tracing::info!(
+            protocol_version = cost_parameters.protocol_version,
             "Running local simulation with {} overrides",
             overrides.len()
         );
@@ -2845,6 +3032,15 @@ impl SimulationEngine {
         // We first run a normal simulation to get the baseline resources and the footprint.
         let transaction_xdr = self.create_invoke_transaction(contract_id, function_name, args)?;
         let mut result = self.simulate_transaction(&transaction_xdr).await?;
+
+        // BE-019: `simulate_transaction` costs against the default parameters,
+        // because the RPC path has no protocol version in scope. Re-cost here,
+        // where the caller's requested version is known, and report which
+        // version the figure belongs to — it previously came back as 0, which
+        // is not a protocol version at all.
+        result.cost_stroops =
+            self.calculate_cost_for_protocol(&result.resources, protocol_version)?;
+        result.protocol_version = cost_parameters.protocol_version;
 
         // Merge state dependency report:
         // 1. Mark injected entries
@@ -3087,7 +3283,10 @@ pub fn profile_contract(
     let env = Env::default();
 
     if let Some(version) = protocol_version {
-        tracing::info!("Setting simulated protocol version to {}", version);
+        tracing::info!(
+            protocol_version = version,
+            "Setting simulated protocol version"
+        );
         env.ledger().set_protocol_version(version);
     }
 
@@ -3201,7 +3400,7 @@ pub fn profile_contract_with_flamegraph(
             Err(e) => {
                 tracing::error!(
                     wasm_size_bytes = wasm_size,
-                    error = %e,
+                    error = %redact_display(&e),
                     "WASM instrumentation failed; falling back to budget API"
                 );
                 (wasm_bytes.clone(), vec![], true)
@@ -3210,7 +3409,7 @@ pub fn profile_contract_with_flamegraph(
         Err(e) => {
             tracing::error!(
                 wasm_size_bytes = wasm_size,
-                error = %e,
+                error = %redact_display(&e),
                 "WASM instrumentation failed; falling back to budget API"
             );
             (wasm_bytes.clone(), vec![], true)
@@ -3823,8 +4022,7 @@ mod tests {
     #[test]
     fn test_parse_contract_id_valid() {
         let engine = SimulationEngine::new("https://test.com".to_string());
-        let result =
-            engine.parse_contract_id(TESTNET_DEFAULT_CONTRACT_ID);
+        let result = engine.parse_contract_id(TESTNET_DEFAULT_CONTRACT_ID);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 32);
     }
@@ -4417,9 +4615,9 @@ mod tests {
         use soroban_sdk::{Env, Symbol, Val};
         let wasm = soroban_wasm();
         let instr = WasmInstrumenter::new(&wasm).expect("parse ok");
-        eprintln!("func_names: {:?}", instr.func_names());
+        tracing::info!("func_names: {:?}", instr.func_names());
         let instrumented = instr.instrument(&wasm).expect("instrument ok");
-        eprintln!(
+        tracing::info!(
             "original size: {}, instrumented size: {}",
             wasm.len(),
             instrumented.len()
@@ -4438,15 +4636,178 @@ mod tests {
             env.invoke_contract::<Val>(&contract_id, &wrapper_sym, empty_args)
         }));
         match &result {
-            Ok(v) => eprintln!(
+            Ok(v) => tracing::info!(
                 "wrapper ok, payload={}, decoded={}",
                 v.get_payload(),
                 v.get_payload() >> 8
             ),
-            Err(_) => eprintln!("wrapper panicked"),
+            Err(_) => tracing::info!("wrapper panicked"),
         }
         assert!(result.is_ok(), "wrapper should succeed");
         let count = result.unwrap().get_payload() >> 8;
         assert!(count > 0, "counter should be > 0, got {count}");
+    }
+}
+
+#[cfg(test)]
+mod protocol_cost_tests {
+    use super::*;
+
+    fn resources() -> SorobanResources {
+        SorobanResources {
+            cpu_instructions: 100_000,
+            ram_bytes: 4_096,
+            ledger_read_bytes: 1_024,
+            ledger_write_bytes: 1_024,
+            transaction_size_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn an_unspecified_version_resolves_to_the_latest() {
+        let resolved = ProtocolCostParameters::resolve(None).unwrap();
+
+        assert_eq!(resolved.protocol_version, LATEST_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn a_specified_version_is_honoured() {
+        for version in MIN_SUPPORTED_PROTOCOL_VERSION..=LATEST_PROTOCOL_VERSION {
+            let resolved = ProtocolCostParameters::resolve(Some(version)).unwrap();
+
+            assert_eq!(resolved.protocol_version, version);
+        }
+    }
+
+    /// The behaviour the issue is about: an unknown protocol must be refused
+    /// rather than costed against whatever parameters happen to be compiled
+    /// in. A confidently wrong number is worse than an error.
+    #[test]
+    fn an_unsupported_version_is_refused_with_the_supported_range() {
+        for version in [
+            0,
+            1,
+            MIN_SUPPORTED_PROTOCOL_VERSION - 1,
+            LATEST_PROTOCOL_VERSION + 1,
+            999,
+        ] {
+            let err = ProtocolCostParameters::for_protocol(version).unwrap_err();
+
+            let msg = err.to_string();
+            assert!(msg.contains(&version.to_string()), "{msg}");
+            assert!(
+                msg.contains(&MIN_SUPPORTED_PROTOCOL_VERSION.to_string())
+                    && msg.contains(&LATEST_PROTOCOL_VERSION.to_string()),
+                "the message should name the supported range: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_supported_range_is_non_empty_and_ordered() {
+        assert!(MIN_SUPPORTED_PROTOCOL_VERSION <= LATEST_PROTOCOL_VERSION);
+        assert!(ProtocolCostParameters::for_protocol(LATEST_PROTOCOL_VERSION).is_ok());
+        assert!(ProtocolCostParameters::for_protocol(MIN_SUPPORTED_PROTOCOL_VERSION).is_ok());
+    }
+
+    #[test]
+    fn cost_is_the_sum_of_the_three_resource_classes() {
+        let params = ProtocolCostParameters::for_protocol(LATEST_PROTOCOL_VERSION).unwrap();
+        let r = resources();
+
+        // 100_000/10_000 + 4_096/1_024 + (1_024+1_024)/1_024 = 10 + 4 + 2
+        assert_eq!(params.cost_of(&r), 16);
+    }
+
+    #[test]
+    fn zero_resources_cost_nothing() {
+        let params = ProtocolCostParameters::resolve(None).unwrap();
+
+        assert_eq!(params.cost_of(&SorobanResources::default()), 0);
+    }
+
+    /// Ledger read and write bytes are charged together, so moving bytes
+    /// between the two must not change the total.
+    #[test]
+    fn ledger_reads_and_writes_are_charged_at_the_same_rate() {
+        let params = ProtocolCostParameters::resolve(None).unwrap();
+
+        let read_heavy = SorobanResources {
+            ledger_read_bytes: 2_048,
+            ledger_write_bytes: 0,
+            ..Default::default()
+        };
+        let write_heavy = SorobanResources {
+            ledger_read_bytes: 0,
+            ledger_write_bytes: 2_048,
+            ..Default::default()
+        };
+
+        assert_eq!(params.cost_of(&read_heavy), params.cost_of(&write_heavy));
+    }
+
+    #[test]
+    fn a_huge_resource_count_saturates_rather_than_overflowing() {
+        let params = ProtocolCostParameters::resolve(None).unwrap();
+
+        let enormous = SorobanResources {
+            cpu_instructions: u64::MAX,
+            ram_bytes: u64::MAX,
+            ledger_read_bytes: u64::MAX,
+            ledger_write_bytes: u64::MAX,
+            transaction_size_bytes: u64::MAX,
+        };
+
+        // The point is that this returns rather than panicking under the
+        // release profile's overflow checks.
+        let cost = params.cost_of(&enormous);
+        assert!(cost > 0);
+    }
+
+    /// The parameters are currently identical across the supported range —
+    /// this build does not invent per-protocol figures it cannot source. The
+    /// test records that, so that introducing a genuine difference is a
+    /// deliberate edit here rather than an accident.
+    #[test]
+    fn parameters_are_currently_uniform_across_supported_protocols() {
+        let baseline = ProtocolCostParameters::for_protocol(LATEST_PROTOCOL_VERSION).unwrap();
+
+        for version in MIN_SUPPORTED_PROTOCOL_VERSION..=LATEST_PROTOCOL_VERSION {
+            let params = ProtocolCostParameters::for_protocol(version).unwrap();
+
+            assert_eq!(
+                params.cpu_instructions_per_stroop,
+                baseline.cpu_instructions_per_stroop
+            );
+            assert_eq!(params.ram_bytes_per_stroop, baseline.ram_bytes_per_stroop);
+            assert_eq!(
+                params.ledger_bytes_per_stroop,
+                baseline.ledger_bytes_per_stroop
+            );
+        }
+    }
+
+    #[test]
+    fn the_engine_costs_identically_through_both_entry_points() {
+        let engine = SimulationEngine::new("https://test.example".to_string());
+        let r = resources();
+
+        let via_default = engine.calculate_cost(&r);
+        let via_version = engine
+            .calculate_cost_for_protocol(&r, Some(LATEST_PROTOCOL_VERSION))
+            .unwrap();
+        let via_none = engine.calculate_cost_for_protocol(&r, None).unwrap();
+
+        assert_eq!(via_default, via_version);
+        assert_eq!(via_default, via_none);
+    }
+
+    #[test]
+    fn the_engine_rejects_an_unsupported_protocol() {
+        let engine = SimulationEngine::new("https://test.example".to_string());
+
+        assert!(engine
+            .calculate_cost_for_protocol(&resources(), Some(999))
+            .is_err());
     }
 }

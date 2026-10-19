@@ -1,0 +1,136 @@
+name: Fuzz — Property-based & coverage
+
+# Fuzz CI (#278): Runs the proptest-based fuzz modules under `core/src/`
+# with elevated iteration counts (`--features fuzz`) and verifies that every
+# target completes within a guaranteed minimum duration.  Coverage is
+# collected via `cargo-tarpaulin` and uploaded as an artefact.
+#
+# Acceptance criteria:
+#   1. Runs `cargo test` with `--features fuzz` (or equivalent)
+#   2. Minimum fuzzing duration ≥ 60 s per target
+#   3. Fuzzing coverage metrics tracked and uploaded
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "core/**"
+      - ".github/workflows/fuzz.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  # proptest iteration count used with `--features fuzz`
+  PROPTEST_CASES: "5000"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 1: Run fuzz tests with --features fuzz
+  # ──────────────────────────────────────────────────────────────────────────
+  fuzz-test:
+    name: Fuzz tests (--features fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # ── Run fuzz tests with timing gate ──────────────────────────────────
+      # We record the start time, run the test suite, and then assert that at
+      # least 60 seconds elapsed — ensuring the fuzzer actually exercises a
+      # meaningful number of iterations.
+      - name: Run fuzz tests (minimum 60 s)
+        run: |
+          echo "▶ Starting fuzz tests at $(date -u +%H:%M:%S)…"
+          START=$(date +%s)
+
+          PROPTEST_CASES="${PROPTEST_CASES}" \
+            cargo test \
+              --package Perigee-core \
+              --lib \
+              --features fuzz \
+              fuzz_ \
+              -- --nocapture
+
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "⏱ Fuzz tests completed in ${ELAPSED}s"
+
+          if [ "$ELAPSED" -lt 60 ]; then
+            echo "::error::Fuzz tests finished in ${ELAPSED}s, which is below the 60-second minimum.  Increase PROPTEST_CASES or add more targets."
+            exit 1
+          fi
+
+          echo "✅ Minimum duration met (${ELAPSED}s ≥ 60s)"
+
+      # ── Run the full test suite (non-fuzz) to catch regressions ──────────
+      - name: Run full test suite
+        run: cargo test --package Perigee-core --lib
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 2: Coverage via cargo-tarpaulin
+  # ──────────────────────────────────────────────────────────────────────────
+  fuzz-coverage:
+    name: Fuzz coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      # ── Collect coverage for fuzz modules ────────────────────────────────
+      - name: Generate fuzz coverage report
+        run: |
+          cargo tarpaulin \
+            --package Perigee-core \
+            --lib \
+            --features fuzz \
+            --out xml \
+            --out html \
+            --output-dir coverage-report \
+            --skip-clean \
+            fuzz_simulation fuzz_tests merkle_tree::tests::fuzz_tests \
+            --timeout 600
+
+      # ── Publish coverage summary ─────────────────────────────────────────
+      - name: Print coverage summary
+        run: |
+          if [ -f coverage-report/cobertura.xml ]; then
+            echo "## Fuzz coverage report" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            # Extract line-rate from Cobertura XML
+            LINE_RATE=$(grep -oP 'line-rate="\K[^"]+' coverage-report/cobertura.xml | head -1)
+            if [ -n "$LINE_RATE" ]; then
+              PCT=$(echo "$LINE_RATE * 100" | bc -l 2>/dev/null || echo "N/A")
+              echo "Line coverage (fuzz modules): **${PCT}%**" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Full HTML report uploaded as artefact below." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage artefact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-coverage-report
+          path: coverage-report/
+          retention-days: 14

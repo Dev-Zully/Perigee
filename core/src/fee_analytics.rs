@@ -8,7 +8,7 @@
 
 #![allow(clippy::unnecessary_cast)]
 
-use crate::fee_store::LedgerFeeSample;
+use crate::fee::persistence::LedgerFeeSample;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -440,7 +440,7 @@ impl Default for FeeAnalyticsEngine {
 #[inline]
 pub(crate) fn ceil_mul_bps(x: u64, bps: u64) -> u64 {
     let prod = (x as u128).saturating_mul(bps as u128);
-    ((prod + 9_999) / 10_000) as u64
+    prod.div_ceil(10_000) as u64
 }
 
 /// Compute `(numerator / denominator) * scale` as basis points.
@@ -466,7 +466,7 @@ pub(crate) fn integer_sqrt(n: u64) -> u64 {
         return 0;
     }
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + n / x) / 2;
@@ -477,7 +477,7 @@ pub(crate) fn integer_sqrt(n: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fee_store::LedgerFeeSample;
+    use crate::fee::persistence::LedgerFeeSample;
     use chrono::Utc;
 
     fn create_sample(ledger: i64, base_fee: i64) -> LedgerFeeSample {
@@ -639,6 +639,12 @@ use std::collections::HashMap;
 
 pub struct AssetHwmTracker {
     hwm: HashMap<String, f64>,
+}
+
+impl Default for AssetHwmTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AssetHwmTracker {

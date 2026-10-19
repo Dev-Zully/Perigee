@@ -294,7 +294,7 @@ function fmtInstr(n: number): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ResourceHeatmap({ resourceCost, callGraph }: ResourceHeatmapProps) {
+function ResourceHeatmapImpl({ resourceCost, callGraph }: ResourceHeatmapProps) {
   type Tab = 'gauges' | 'ram' | 'hotspot' | 'footprint';
   const [activeTab, setActiveTab] = useState<Tab>('gauges');
   const [hoveredCellId, setHoveredCellId] = useState<string | null>(null);
@@ -429,7 +429,7 @@ export function ResourceHeatmap({ resourceCost, callGraph }: ResourceHeatmapProp
   }
 
   return (
-    <div className="w-full bg-slate-900/90 backdrop-blur-2xl border border-slate-800 rounded-xl shadow-2xl p-6 relative overflow-hidden font-sans select-none">
+    <div className="w-full overflow-x-auto bg-slate-900/90 backdrop-blur-2xl border border-slate-800 rounded-xl shadow-2xl p-6 relative overflow-hidden font-sans select-none">
       {/* Specular bevel */}
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent pointer-events-none" />
       {/* Dot-grid background */}
@@ -451,7 +451,7 @@ export function ResourceHeatmap({ resourceCost, callGraph }: ResourceHeatmapProp
           </div>
         </div>
 
-        <div className="flex bg-slate-950/80 p-0.5 rounded-lg border border-slate-800/80 self-start md:self-auto shadow-inner">
+        <div className="flex flex-wrap bg-slate-950/80 p-0.5 rounded-lg border border-slate-800/80 self-start md:self-auto shadow-inner">
           {tabs.map(tab => (
             <button
               key={tab.key}
@@ -762,7 +762,7 @@ export function ResourceHeatmap({ resourceCost, callGraph }: ResourceHeatmapProp
 
               {/* ── Hotspot grid ───────────────────────────────────────────── */}
               <div className="flex-1">
-                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {hotspotCells.map((cell, rank) => {
                     const clr = hotspotColors(cell.cpuShare);
                     const isHovered = hoveredCellId === cell.id;
@@ -1411,7 +1411,7 @@ export function ResourceHeatmap({ resourceCost, callGraph }: ResourceHeatmapProp
       </div>
 
       {/* ── Footer summary bar ──────────────────────────────────────────────── */}
-      <div className="mt-6 pt-4 border-t border-slate-800/80 grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+      <div className="mt-6 pt-4 border-t border-slate-800/80 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-center">
         <div className="bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/40">
           <span className="text-[9px] font-mono text-slate-500 block uppercase">STROOP FEE</span>
           <span className="text-xs font-mono font-bold text-slate-300 mt-1 block">{cost_stroops.toLocaleString()} stroops</span>
@@ -1438,3 +1438,6 @@ export function ResourceHeatmap({ resourceCost, callGraph }: ResourceHeatmapProp
     </div>
   );
 }
+
+/** Memoised (#692): re-renders only when props change. */
+export const ResourceHeatmap = React.memo(ResourceHeatmapImpl);

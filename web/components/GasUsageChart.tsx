@@ -40,7 +40,7 @@ const formatStroops = (stroops: number) => {
   return `${xlm.toFixed(7)} XLM`;
 };
 
-export const GasUsageChart: React.FC<GasUsageChartProps> = ({
+const GasUsageChartImpl: React.FC<GasUsageChartProps> = ({
   cpu_instructions,
   ram_bytes,
   ledger_read_bytes,
@@ -211,3 +211,6 @@ export const GasUsageChart: React.FC<GasUsageChartProps> = ({
     </div>
   );
 };
+
+/** Memoised (#692): pure presentational component, re-renders only when props change. */
+export const GasUsageChart = React.memo(GasUsageChartImpl);

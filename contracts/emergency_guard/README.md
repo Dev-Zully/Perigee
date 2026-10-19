@@ -1,5 +1,13 @@
 # EmergencyGuard - Standardized Emergency Controls for Soroban Contracts
 
+> **Note:** The reusable guard core (pause bitmask, admin committee, multi-sig
+> threshold validation, typed events) now lives in the shared
+> [`Perigee-guards`](../guards) library crate and is re-exported here via
+> `DefaultEmergencyGuard`. Contract entry points, storage keys, event topics and
+> error codes are unchanged, so host contracts can keep importing this crate
+> exactly as before. New consumers are encouraged to depend on
+> `Perigee-guards` directly.
+
 ## Overview
 
 The EmergencyGuard trait provides a standardized, reusable mechanism for emergency pause and admin management across all contracts in the workspace. It features:

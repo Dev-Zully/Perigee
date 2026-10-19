@@ -73,6 +73,13 @@ impl AgentIdentity {
     pub fn revoke(&mut self) {
         self.is_active = false;
         self.revoked_at = Some(Utc::now());
+        crate::audit_log::log_security_event(
+            crate::audit_log::SecurityEventType::AgentDisabled,
+            Some(&self.agent_id),
+            None,
+            None,
+            Some("Agent identity revoked and disabled"),
+        );
     }
 
     pub fn is_revoked(&self) -> bool {

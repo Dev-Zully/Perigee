@@ -8,6 +8,7 @@
  */
 
 import type { AnalyzeResponse } from "./sorobantypes";
+import { trackTelemetryEvent } from "./telemetry";
 
 import {
   AnalyzeRequestDto,
@@ -38,6 +39,7 @@ export const API_URL = isProduction ? "/api" : configuredUrl;
 export const apiConfig = {
   baseUrl: API_URL,
   environment: process.env.NODE_ENV ?? "development",
+  apiVersion: "v1",
 };
 
 export interface ApiRequestOptions extends Omit<RequestInit, "body"> {
@@ -158,7 +160,10 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
       }
 
       const delayMs = BASE_RETRY_DELAY_MS * 2 ** attempt;
-      await sleep(delayMs);
+      // Add full-jitter (0–100 % of the backoff window) to spread thundering-herd
+      // retries across time and avoid synchronized retry storms on shared RPC nodes.
+      const jitter = Math.random() * delayMs;
+      await sleep(delayMs + jitter);
     }
   }
 
@@ -176,6 +181,10 @@ async function request<T>(
 
   if (!requestHeaders.has("Accept")) {
     requestHeaders.set("Accept", "application/json");
+  }
+
+  if (!requestHeaders.has("X-API-Version")) {
+    requestHeaders.set("X-API-Version", apiConfig.apiVersion);
   }
 
   if (token && !requestHeaders.has("Authorization")) {
@@ -337,6 +346,30 @@ export interface UpdateVaultRequest {
   config_json?: string;
 }
 
+export type UserRole = "admin" | "manager" | "operator" | "viewer";
+
+export interface ScopedTokenRequest {
+  role: UserRole;
+  vault_scopes?: string[];
+}
+
+export interface ScopedTokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  role: UserRole;
+  vault_scopes: string[];
+}
+
+export const authService = {
+  async issueScopedToken(
+    req: ScopedTokenRequest,
+    token?: string,
+  ): Promise<ScopedTokenResponse> {
+    return apiClient.post<ScopedTokenResponse>("/auth/scoped-token", req, { token });
+  },
+};
+
 export const vaultService = {
   async list(managerId: string, token?: string): Promise<VaultRecord[]> {
     return apiClient.get<VaultRecord[]>("/vaults", {
@@ -350,7 +383,9 @@ export const vaultService = {
   },
 
   async create(req: CreateVaultRequest, token?: string): Promise<VaultRecord> {
-    return apiClient.post<VaultRecord>("/vaults", req, { token });
+    const vault = await apiClient.post<VaultRecord>("/vaults", req, { token });
+    trackTelemetryEvent({ name: "vault_create" });
+    return vault;
   },
 
   async update(id: string, req: UpdateVaultRequest, token?: string): Promise<VaultRecord> {

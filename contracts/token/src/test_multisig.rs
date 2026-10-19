@@ -6,22 +6,19 @@
 //! EmergencyGuard contract as the token's admin, exercising add_admin,
 //! remove_admin, emergency_pause, and resume with threshold enforcement.
 
-use soroban_sdk::{testutils::Address as _, vec, Address, Env};
+use soroban_sdk::{testutils::Address as _, vec, Address, Env, Vec};
 
 // Import EmergencyGuard directly from its crate
 use emergency_guard::{EmergencyGuard, EmergencyGuardClient};
 
-fn setup_guard(env: &Env, admins: &[Address], threshold: u32) -> (EmergencyGuardClient, Address) {
+fn setup_guard(
+    env: &Env,
+    admins: Vec<Address>,
+    threshold: u32,
+) -> (EmergencyGuardClient<'_>, Address) {
     let contract_id = env.register(EmergencyGuard, ());
     let client = EmergencyGuardClient::new(env, &contract_id);
-    let admins_vec = {
-        let mut v = vec![env];
-        for a in admins {
-            v.push_back(a.clone());
-        }
-        v
-    };
-    client.initialize(&admins_vec, &threshold).unwrap();
+    client.initialize(&admins, &threshold);
     (client, contract_id)
 }
 
@@ -34,10 +31,10 @@ fn test_multisig_2_of_3_pause_succeeds() {
     let a1 = Address::generate(&env);
     let a2 = Address::generate(&env);
     let a3 = Address::generate(&env);
-    let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone(), a3.clone()], 2);
+    let (client, _) = setup_guard(&env, vec![&env, a1.clone(), a2.clone(), a3.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.emergency_pause(&approvers).unwrap();
+    client.emergency_pause(&approvers);
 
     assert!(client.is_paused(&emergency_guard::PauseType::MINT));
 }
@@ -51,7 +48,7 @@ fn test_multisig_2_of_3_pause_fails_insufficient() {
     let a1 = Address::generate(&env);
     let a2 = Address::generate(&env);
     let a3 = Address::generate(&env);
-    let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone(), a3.clone()], 2);
+    let (client, _) = setup_guard(&env, vec![&env, a1.clone(), a2.clone(), a3.clone()], 2);
 
     let approvers = vec![&env, a1.clone()];
     let result = client.try_emergency_pause(&approvers);
@@ -67,10 +64,10 @@ fn test_multisig_3_of_3_all_required() {
     let a1 = Address::generate(&env);
     let a2 = Address::generate(&env);
     let a3 = Address::generate(&env);
-    let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone(), a3.clone()], 3);
+    let (client, _) = setup_guard(&env, vec![&env, a1.clone(), a2.clone(), a3.clone()], 3);
 
     let approvers = vec![&env, a1.clone(), a2.clone(), a3.clone()];
-    client.emergency_pause(&approvers).unwrap();
+    client.emergency_pause(&approvers);
     assert!(client.is_paused(&emergency_guard::PauseType::MINT));
 }
 
@@ -83,10 +80,10 @@ fn test_multisig_add_admin() {
     let a1 = Address::generate(&env);
     let a2 = Address::generate(&env);
     let new_admin = Address::generate(&env);
-    let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone()], 2);
+    let (client, _) = setup_guard(&env, vec![&env, a1.clone(), a2.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.add_admin(&approvers, &new_admin).unwrap();
+    client.add_admin(&approvers, &new_admin);
 
     let admins = client.get_admins();
     assert!(admins.iter().any(|a| a == new_admin));
@@ -101,10 +98,10 @@ fn test_multisig_remove_admin() {
     let a1 = Address::generate(&env);
     let a2 = Address::generate(&env);
     let a3 = Address::generate(&env);
-    let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone(), a3.clone()], 2);
+    let (client, _) = setup_guard(&env, vec![&env, a1.clone(), a2.clone(), a3.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.remove_admin(&approvers, &a3).unwrap();
+    client.remove_admin(&approvers, &a3);
 
     let admins = client.get_admins();
     assert!(!admins.iter().any(|a| a == a3));
@@ -118,13 +115,13 @@ fn test_multisig_resume_after_pause() {
 
     let a1 = Address::generate(&env);
     let a2 = Address::generate(&env);
-    let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone()], 2);
+    let (client, _) = setup_guard(&env, vec![&env, a1.clone(), a2.clone()], 2);
 
     let approvers = vec![&env, a1.clone(), a2.clone()];
-    client.emergency_pause(&approvers).unwrap();
+    client.emergency_pause(&approvers);
     assert!(client.is_paused(&emergency_guard::PauseType::MINT));
 
-    client.resume(&approvers).unwrap();
+    client.resume(&approvers);
     assert!(!client.is_paused(&emergency_guard::PauseType::MINT));
 }
 
@@ -136,7 +133,7 @@ fn test_multisig_duplicate_approvers_rejected() {
 
     let a1 = Address::generate(&env);
     let a2 = Address::generate(&env);
-    let (client, _) = setup_guard(&env, &[a1.clone(), a2.clone()], 2);
+    let (client, _) = setup_guard(&env, vec![&env, a1.clone(), a2.clone()], 2);
 
     // Provide a1 twice — should only count as 1 unique approver
     let approvers = vec![&env, a1.clone(), a1.clone()];

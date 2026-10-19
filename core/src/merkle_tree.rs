@@ -494,6 +494,11 @@ mod fuzz_tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// Number of proptest cases: 5 000 with the `fuzz` feature, 500 otherwise.
+    fn fuzz_cases() -> u32 {
+        if cfg!(feature = "fuzz") { 5_000 } else { 500 }
+    }
+
     fn arb_leaf() -> impl Strategy<Value = Vec<u8>> {
         prop::collection::vec(any::<u8>(), 0..=256)
     }
@@ -503,7 +508,7 @@ mod fuzz_tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(500))]
+        #![proptest_config(ProptestConfig::with_cases(fuzz_cases()))]
 
         /// Builder must never panic on any non-empty input.
         #[test]

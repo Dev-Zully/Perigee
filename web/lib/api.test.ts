@@ -79,4 +79,25 @@ void (async () => {
 
     globalThis.fetch = originalFetch;
   }
+
+  // Versioning: request headers include X-API-Version
+  {
+    const originalFetch = globalThis.fetch;
+    let capturedHeader: string | null = null;
+
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      capturedHeader = headers.get("X-API-Version");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await apiClient.get<{ ok: boolean }>("/health");
+    assert.equal(capturedHeader, "v1");
+
+    globalThis.fetch = originalFetch;
+  }
 })();
+

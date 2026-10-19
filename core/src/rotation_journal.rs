@@ -103,6 +103,12 @@ pub struct RotationJournalStore {
     journals: Vec<RotationJournal>,
 }
 
+impl Default for RotationJournalStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RotationJournalStore {
     pub fn new() -> Self {
         Self {

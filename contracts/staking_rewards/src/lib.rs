@@ -1,10 +1,18 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Vec, vec};
 
-use emergency_guard::{EmergencyGuard, PauseType};
+use emergency_guard::{DefaultEmergencyGuard, GuardError, PauseType};
+
+pub mod snapshot;
+
+impl From<GuardError> for ContractError {
+    fn from(_: GuardError) -> Self {
+        ContractError::Paused
+    }
+}
+
 pub use Perigee_error_codes::ContractError;
 use Perigee_math::Fixed;
-use emergency_guard::{DefaultEmergencyGuard, PauseType, EmergencyGuardTrait};
 
 pub const SCALE: i128 = 1_000_000_000_000_000_000; // 18 decimals
 
@@ -14,11 +22,22 @@ pub const SCALE: i128 = 1_000_000_000_000_000_000; // 18 decimals
 #[contracttype]
 pub enum DataKey {
     Config,
+    FeeMarketConfig,
     UserState(Address),
     TotalStaked,
 }
 
 // ── Configuration Struct ──────────────────────────────────────
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FeeMarketConfig {
+    pub min_fee_bps: i128,
+    pub max_fee_bps: i128,
+    pub congestion_weight_bps: i128,
+    pub utilization_weight_bps: i128,
+    pub market_weight_bps: i128,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
@@ -214,7 +233,11 @@ pub struct StakingRewards;
 
 #[contractimpl]
 impl StakingRewards {
-    /// Initializes the staking rewards contract with the config.
+    /// Canonical emergency guard API used throughout this contract:
+    /// `DefaultEmergencyGuard::check_not_paused(...)` and
+    /// `DefaultEmergencyGuard::set_pause_state(...)`.
+    /// Contract code should not bypass this guard with the lower-level
+    /// `EmergencyGuard::*` methods.
     pub fn initialize(
         e: Env,
         owner: Address,
@@ -246,28 +269,37 @@ impl StakingRewards {
             is_paused: false,
         };
 
+        let fee_market = FeeMarketConfig {
+            min_fee_bps: 0,
+            max_fee_bps: 10_000,
+            congestion_weight_bps: 30,
+            utilization_weight_bps: 40,
+            market_weight_bps: 30,
+        };
+
         e.storage().instance().set(&DataKey::Config, &config);
+        e.storage().instance().set(&DataKey::FeeMarketConfig, &fee_market);
         e.storage().instance().set(&DataKey::TotalStaked, &0i128);
         e.storage().instance().extend_ttl(10000, 10000);
 
-        // Initialize emergency guard with single admin and threshold of 1
+        // Initialize emergency guard with single admin and threshold of 1.
+        // `init_guard` seeds admins, threshold, and pause state; do not also
+        // call `EmergencyGuard::initialize` — it writes the same storage keys
+        // and would fail with AlreadyInitialized.
         let admins = vec![&e, owner.clone()];
         DefaultEmergencyGuard::init_guard(&e, admins, 1)
             .map_err(|_| ContractError::AlreadyInitialized)?;
-        // Initialize the embedded EmergencyGuard so granular pause checks
-        // (e.g. PauseType::CLAIM_REWARDS) can be toggled by the owner.
-        // Threshold of 1 means the single owner can trigger any pause.
-        let admins = soroban_sdk::vec![&e, config.owner.clone()];
-        EmergencyGuard::initialize(e, admins, 1).map_err(|_| ContractError::AlreadyInitialized)?;
 
         Ok(())
     }
 
+    fn ensure_not_paused(e: &Env, operation: u32) -> Result<(), ContractError> {
+        DefaultEmergencyGuard::check_not_paused(e, operation).map_err(|_| ContractError::Paused)
+    }
+
     /// Stakes primary tokens in the contract.
     pub fn stake(e: Env, user: Address, amount: i128) -> Result<(), ContractError> {
-        // Check if staking is paused using granular pause control
-        DefaultEmergencyGuard::check_not_paused(&e, PauseType::STAKE)
-            .map_err(|_| ContractError::Paused)?;
+        Self::ensure_not_paused(&e, PauseType::STAKE)?;
 
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
@@ -278,7 +310,6 @@ impl StakingRewards {
         let config = Self::get_config(e.clone())?;
         let mut state = Self::update_user_rewards_internal(&e, &config, &user)?;
 
-        // Transfer staking tokens from user to contract
         token::Client::new(&e, &config.staking_token).transfer(
             &user,
             &e.current_contract_address(),
@@ -290,7 +321,6 @@ impl StakingRewards {
             .checked_add(amount)
             .ok_or(ContractError::Overflow)?;
 
-        // Update total staked
         let mut total_staked: i128 = e
             .storage()
             .instance()
@@ -321,9 +351,7 @@ impl StakingRewards {
 
     /// Withdraws staked principal tokens.
     pub fn withdraw(e: Env, user: Address, amount: i128) -> Result<(), ContractError> {
-        // Check if staking is paused using granular pause control
-        DefaultEmergencyGuard::check_not_paused(&e, PauseType::STAKE)
-            .map_err(|_| ContractError::Paused)?;
+        Self::ensure_not_paused(&e, PauseType::STAKE)?;
 
         if amount <= 0 {
             return Err(ContractError::InvalidInput);
@@ -343,7 +371,6 @@ impl StakingRewards {
             .checked_sub(amount)
             .ok_or(ContractError::Overflow)?;
 
-        // Update total staked
         let mut total_staked: i128 = e
             .storage()
             .instance()
@@ -370,7 +397,6 @@ impl StakingRewards {
         }
         e.storage().instance().extend_ttl(10000, 10000);
 
-        // Transfer staking tokens back to user
         token::Client::new(&e, &config.staking_token).transfer(
             &e.current_contract_address(),
             &user,
@@ -386,14 +412,12 @@ impl StakingRewards {
     }
 
     /// Claims accrued rewards.
+    /// Claim operations are paused independently of staking actions. The
+    /// `STAKE` bit governs deposit/withdraw flows; `CLAIM_REWARDS` is the
+    /// dedicated gate for reward withdrawals, so a staking pause does not
+    /// implicitly freeze reward claims.
     pub fn claim(e: Env, user: Address) -> Result<i128, ContractError> {
-        // Check if staking is paused using granular pause control
-        DefaultEmergencyGuard::check_not_paused(&e, PauseType::STAKE)
-            .map_err(|_| ContractError::Paused)?;
-
-        if EmergencyGuard::is_paused(e.clone(), PauseType::CLAIM_REWARDS) {
-            return Err(ContractError::Paused);
-        }
+        Self::ensure_not_paused(&e, PauseType::CLAIM_REWARDS)?;
 
         user.require_auth();
 
@@ -421,7 +445,6 @@ impl StakingRewards {
         }
         e.storage().instance().extend_ttl(10000, 10000);
 
-        // Transfer reward tokens to user
         token::Client::new(&e, &config.reward_token).transfer(
             &e.current_contract_address(),
             &user,
@@ -493,39 +516,31 @@ impl StakingRewards {
         Ok(staked_amount)
     }
 
-    /// Pause staking operations (admin only).
+    /// Pause staking operations (owner only).
     pub fn pause_staking(e: Env) -> Result<(), ContractError> {
-        let config = Self::get_config(e.clone())?;
-    /// Sets the global paused state (owner only).
+        Self::set_paused(e, true)
+    }
+
+    /// Sets the staking pause bit (owner only).
     pub fn set_paused(e: Env, paused: bool) -> Result<(), ContractError> {
-        let mut config = Self::get_config(e.clone())?;
+        let config = Self::get_config(e.clone())?;
         config.owner.require_auth();
 
-        DefaultEmergencyGuard::set_pause_state(&e, PauseType::STAKE, true)
+        DefaultEmergencyGuard::set_pause_state(&e, PauseType::STAKE, paused)
             .map_err(|_| ContractError::Paused)?;
 
+        let topic = if paused { "pause_staking" } else { "resume_staking" };
         e.events().publish(
-            (String::from_str(&e, "pause_staking"),),
-            PausedEvent { paused: true },
+            (String::from_str(&e, topic),),
+            PausedEvent { paused },
         );
 
         Ok(())
     }
 
-    /// Resume staking operations (admin only).
+    /// Resume staking operations (owner only).
     pub fn resume_staking(e: Env) -> Result<(), ContractError> {
-        let config = Self::get_config(e.clone())?;
-        config.owner.require_auth();
-
-        DefaultEmergencyGuard::set_pause_state(&e, PauseType::STAKE, false)
-            .map_err(|_| ContractError::Paused)?;
-
-        e.events().publish(
-            (String::from_str(&e, "resume_staking"),),
-            PausedEvent { paused: false },
-        );
-
-        Ok(())
+        Self::set_paused(e, false)
     }
 
     /// Emergency pause all operations (requires multi-sig approval).
@@ -589,18 +604,27 @@ impl StakingRewards {
     }
 
     /// Rotate admin (multi-sig required).
-    pub fn rotate_admin(e: Env, approvers: Vec<Address>, old_admin: Address, new_admin: Address) -> Result<(), ContractError> {
+    pub fn rotate_admin(
+        e: Env,
+        approvers: Vec<Address>,
+        old_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), ContractError> {
         DefaultEmergencyGuard::rotate_admin(&e, approvers, old_admin, new_admin)
+            .map_err(|_| ContractError::Paused)
+    }
+
     /// Granularly pause or unpause the claim_rewards operation (owner only).
-    /// This is independent of the global `is_paused` flag and uses the
-    /// embedded EmergencyGuard bitmask (PauseType::CLAIM_REWARDS).
+    /// This is intentionally distinct from the `STAKE` pause bit so staking can
+    /// be halted without also freezing valid reward claims, or vice versa.
     pub fn set_claim_rewards_paused(e: Env, paused: bool) -> Result<(), ContractError> {
         let config = Self::get_config(e.clone())?;
-        // `EmergencyGuard::set_pause` performs the ownership auth check itself,
-        // so we pass the owner through directly to avoid double-auth failures
-        // when the same signer is reused within the same transaction.
-        EmergencyGuard::set_pause(e, config.owner, PauseType::CLAIM_REWARDS, paused)
-            .map_err(|_| ContractError::Paused)
+        config.owner.require_auth();
+
+        DefaultEmergencyGuard::set_pause_state(&e, PauseType::CLAIM_REWARDS, paused)
+            .map_err(|_| ContractError::Paused)?;
+
+        Ok(())
     }
 
     // ── View Functions ──────────────────────────────────────────
@@ -671,6 +695,205 @@ impl StakingRewards {
             .instance()
             .get(&DataKey::Config)
             .ok_or(ContractError::NotInitialized)
+    }
+
+    /// Returns the configured fee-market adjustment bounds and weighting factors.
+    pub fn get_fee_market_config(e: Env) -> Result<FeeMarketConfig, ContractError> {
+        e.storage()
+            .instance()
+            .get(&DataKey::FeeMarketConfig)
+            .ok_or(ContractError::NotInitialized)
+    }
+
+    /// Allows governance to set the min/max effective fee bounds used for dynamic
+    /// fee adjustments. The min bound cannot exceed the max bound, both are capped
+    /// to the protocol's configured fee scale (10000 bps = 100%).
+    pub fn set_fee_market_bounds(
+        e: Env,
+        min_fee_bps: i128,
+        max_fee_bps: i128,
+    ) -> Result<(), ContractError> {
+        let config = Self::get_config(e.clone())?;
+        config.owner.require_auth();
+
+        if min_fee_bps < 0 || max_fee_bps < 0 || max_fee_bps < min_fee_bps {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let max_fee_cap: i128 = 10_000;
+        if min_fee_bps > max_fee_cap || max_fee_bps > max_fee_cap {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let mut market = e
+            .storage()
+            .instance()
+            .get(&DataKey::FeeMarketConfig)
+            .unwrap_or(FeeMarketConfig {
+                min_fee_bps: 0,
+                max_fee_bps: max_fee_cap,
+                congestion_weight_bps: 30,
+                utilization_weight_bps: 40,
+                market_weight_bps: 30,
+            });
+
+        market.min_fee_bps = min_fee_bps;
+        market.max_fee_bps = max_fee_bps;
+        e.storage().instance().set(&DataKey::FeeMarketConfig, &market);
+        Ok(())
+    }
+
+    /// Computes a dynamically-adjusted fee rate using network congestion,
+    /// vault utilization, and macro market conditions. Value is clamped to the
+    /// governance-configured bounds.
+    pub fn calculate_dynamic_fee(
+        e: Env,
+        base_fee_bps: i128,
+        network_congestion_bps: i128,
+        vault_utilization_bps: i128,
+        market_conditions_bps: i128,
+    ) -> Result<i128, ContractError> {
+        if base_fee_bps < 0
+            || network_congestion_bps < 0
+            || vault_utilization_bps < 0
+            || market_conditions_bps < 0
+        {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let market = e
+            .storage()
+            .instance()
+            .get(&DataKey::FeeMarketConfig)
+            .unwrap_or(FeeMarketConfig {
+                min_fee_bps: 0,
+                max_fee_bps: 10_000,
+                congestion_weight_bps: 30,
+                utilization_weight_bps: 40,
+                market_weight_bps: 30,
+            });
+
+        let congestion_adjustment = market
+            .congestion_weight_bps
+            .checked_mul(network_congestion_bps)
+            .ok_or(ContractError::Overflow)?
+            / 10_000;
+        let utilization_adjustment = market
+            .utilization_weight_bps
+            .checked_mul(vault_utilization_bps)
+            .ok_or(ContractError::Overflow)?
+            / 10_000;
+        let market_adjustment = market
+            .market_weight_bps
+            .checked_mul(market_conditions_bps)
+            .ok_or(ContractError::Overflow)?
+            / 10_000;
+
+        let effective = base_fee_bps
+            .checked_add(congestion_adjustment)
+            .and_then(|v| v.checked_add(utilization_adjustment))
+            .and_then(|v| v.checked_add(market_adjustment))
+            .ok_or(ContractError::Overflow)?;
+
+        let bounded = if effective < market.min_fee_bps {
+            market.min_fee_bps
+        } else if effective > market.max_fee_bps {
+            market.max_fee_bps
+        } else {
+            effective
+        };
+
+        Ok(bounded)
+    }
+
+    /// Create a snapshot of staking state for reward calculation
+    /// This prevents manipulation by recording balances at a specific point in time
+    pub fn create_staking_snapshot(
+        e: Env,
+        user: Address,
+    ) -> Result<snapshot::StakingSnapshot, ContractError> {
+        let snapshot_id = snapshot::get_next_snapshot_id(&e);
+        let staked = Self::get_staked_balance(e.clone(), user.clone());
+        let rewards = Self::get_accrued_rewards(e.clone(), user.clone());
+        
+        let snapshot = snapshot::create_staking_snapshot(&e, user, snapshot_id, staked, rewards);
+        Ok(snapshot)
+    }
+
+    /// Get staking balance from a snapshot
+    pub fn get_snapshot_staking_balance(
+        e: Env,
+        user: Address,
+        snapshot_id: u64,
+    ) -> Option<snapshot::StakingSnapshot> {
+        snapshot::read_snapshot_staking_balance(&e, user, snapshot_id)
+    }
+
+    /// Create snapshots for a reward epoch
+    /// This should be called at the start of each reward period
+    pub fn create_epoch_snapshot(
+        e: Env,
+        epoch_id: u64,
+        addresses: Vec<Address>,
+    ) -> Result<u64, ContractError> {
+        let config = Self::get_config(e.clone())?;
+        config.owner.require_auth();
+        
+        let addr_slice: Vec<Address> = addresses;
+        let addr_refs: Vec<Address> = addr_slice.iter().collect();
+        
+        snapshot::create_reward_epoch_snapshot(&e, epoch_id, &addr_refs)
+    }
+
+    /// Convenience wrapper for governance to update the weighting profile at the
+    /// same time as the fee bounds. This keeps the market model fully configurable.
+    pub fn configure_fee_market(
+        e: Env,
+        min_fee_bps: i128,
+        max_fee_bps: i128,
+        congestion_weight_bps: i128,
+        utilization_weight_bps: i128,
+        market_weight_bps: i128,
+    ) -> Result<(), ContractError> {
+        let config = Self::get_config(e.clone())?;
+        config.owner.require_auth();
+
+        if congestion_weight_bps < 0
+            || utilization_weight_bps < 0
+            || market_weight_bps < 0
+            || congestion_weight_bps + utilization_weight_bps + market_weight_bps > 10_000
+        {
+            return Err(ContractError::InvalidInput);
+        }
+
+        let mut market = e
+            .storage()
+            .instance()
+            .get(&DataKey::FeeMarketConfig)
+            .unwrap_or(FeeMarketConfig {
+                min_fee_bps: 0,
+                max_fee_bps: 10_000,
+                congestion_weight_bps: 30,
+                utilization_weight_bps: 40,
+                market_weight_bps: 30,
+            });
+
+        market.min_fee_bps = min_fee_bps;
+        market.max_fee_bps = max_fee_bps;
+        market.congestion_weight_bps = congestion_weight_bps;
+        market.utilization_weight_bps = utilization_weight_bps;
+        market.market_weight_bps = market_weight_bps;
+
+        if market.min_fee_bps > market.max_fee_bps {
+            return Err(ContractError::InvalidInput);
+        }
+
+        if market.min_fee_bps < 0 || market.max_fee_bps < 0 || market.max_fee_bps > 10_000 {
+            return Err(ContractError::InvalidInput);
+        }
+
+        e.storage().instance().set(&DataKey::FeeMarketConfig, &market);
+        Ok(())
     }
 
     // ── Internal Helpers ────────────────────────────────────────

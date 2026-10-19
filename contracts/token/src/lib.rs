@@ -6,6 +6,7 @@ mod balance;
 mod contract;
 mod metadata;
 mod storage_types;
+mod uri;
 
 // Re-export emergency guard for use in token contracts
 pub use emergency_guard;
@@ -17,6 +18,8 @@ mod test_admin_rotation;
 // mod test_granular_pause;
 #[cfg(test)]
 mod test_multisig;
+#[cfg(test)]
+mod test_token_uri;
 // Legacy integration tests in test.rs are disabled pending cleanup.
 // #[cfg(test)]
 // mod test;

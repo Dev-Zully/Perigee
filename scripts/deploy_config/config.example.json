@@ -1,0 +1,38 @@
+{
+  "network": "testnet",
+  "stage": "development",
+  "contracts": {
+    "token": {
+      "admin": "GCVXBQO5IXK35UKWJFO5TJ25Z2V6G4K7NSGWXLAO7XBFWYVYFWFDBQ6G",
+      "params": {
+        "decimals": 7,
+        "initial_supply": 1000000000000,
+        "name": "Perigee USDC",
+        "symbol": "USDC"
+      }
+    },
+    "emergency_guard": {
+      "admins": [
+        "GCVXBQO5IXK35UKWJFO5TJ25Z2V6G4K7NSGWXLAO7XBFWYVYFWFDBQ6G",
+        "GCVBXQO5IXK35UKWJFO5TJ25Z2V6G4K7NSGWXLAO7XBFWYVYFWFDBQ6G"
+      ],
+      "threshold": 2
+    },
+    "oracle_aggregator": {
+      "max_staleness_seconds": 900
+    },
+    "twap_oracle": {
+      "token_a": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      "token_b": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      "min_update_interval_seconds": 60
+    },
+    "staking_rewards": {
+      "admin": "GCVXBQO5IXK35UKWJFO5TJ25Z2V6G4K7NSGWXLAO7XBFWYVYFWFDBQ6G",
+      "params": {}
+    },
+    "proxy": {
+      "admin": "GCVXBQO5IXK35UKWJFO5TJ25Z2V6G4K7NSGWXLAO7XBFWYVYFWFDBQ6G",
+      "initial_implementation": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+    }
+  }
+}

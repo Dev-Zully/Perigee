@@ -18,6 +18,12 @@ pub struct FailoverEvent {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+impl Default for FailoverManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FailoverManager {
     pub fn new() -> Self {
         Self {
@@ -71,6 +77,14 @@ impl FailoverManager {
 
     pub fn record_health_success(&mut self, agent_id: &str) {
         self.consecutive_failures.remove(agent_id);
+    }
+
+    pub fn remove_agent(&mut self, agent_id: &str) {
+        self.consecutive_failures.remove(agent_id);
+        let suffix = format!(":{}", agent_id);
+        self.pending_reauth
+            .retain(|entry| !entry.as_str().ends_with(suffix.as_str()));
+        self.events.retain(|event| event.agent_id != agent_id);
     }
 
     pub fn check_and_trigger_failover(

@@ -200,3 +200,24 @@ pub enum CacheError {
     #[error("cache payload (de)serialisation error: {0}")]
     Serialization(#[from] serde_json::Error),
 }
+pub struct InsightsCache {
+    l1: Cache<String, crate::insights::InsightsReport>,
+}
+
+impl InsightsCache {
+    pub fn new() -> Arc<Self> {
+        let l1 = Cache::builder()
+            .max_capacity(CACHE_MAX_CAPACITY)
+            .time_to_live(Duration::from_secs(300)) // 5 minutes TTL
+            .build();
+        Arc::new(Self { l1 })
+    }
+
+    pub async fn get(&self, key: &str) -> Option<crate::insights::InsightsReport> {
+        self.l1.get(key).await
+    }
+
+    pub async fn set(&self, key: String, report: crate::insights::InsightsReport) {
+        self.l1.insert(key, report).await;
+    }
+}

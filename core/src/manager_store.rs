@@ -1,11 +1,15 @@
+use crate::auth::AuthenticatedUser;
+use crate::error_codes::ErrorCode;
+use crate::errors::{ApiJson, AppError};
 use crate::errors::AppError;
+use crate::input_sanitization::{SanitizedJson, SanitizedPath, SanitizedQuery};
 use crate::db;
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
+    extract::State,
     Json,
 };
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
 use std::sync::Arc;
 use thiserror::Error;
 use utoipa::ToSchema;
@@ -29,10 +33,18 @@ pub enum ManagerStoreError {
 impl From<ManagerStoreError> for AppError {
     fn from(err: ManagerStoreError) -> Self {
         match err {
-            ManagerStoreError::NotFound(msg) => AppError::NotFound(msg),
-            ManagerStoreError::InvalidData(msg) => AppError::BadRequest(msg),
-            ManagerStoreError::DuplicateAddress(msg) => AppError::Conflict(msg),
-            ManagerStoreError::Database(e) => AppError::Internal(e.to_string()),
+            ManagerStoreError::NotFound(msg) => {
+                AppError::with_code(ErrorCode::ManagerNotFound, msg)
+            }
+            ManagerStoreError::InvalidData(msg) => {
+                AppError::with_code(ErrorCode::InvalidInput, msg)
+            }
+            ManagerStoreError::DuplicateAddress(msg) => {
+                AppError::with_code(ErrorCode::ManagerAlreadyExists, msg)
+            }
+            ManagerStoreError::Database(e) => {
+                AppError::with_code(ErrorCode::DatabaseError, e.to_string())
+            }
         }
     }
 }
@@ -110,11 +122,29 @@ impl ManagerStore {
         }
     }
 
-    pub async fn list(&self, status_filter: Option<&str>) -> Result<Vec<ManagerRecord>, ManagerStoreError> {
-        self.managers
-            .list(status_filter)
+    pub async fn list(
+        &self,
+        status_filter: Option<&str>,
+        pagination: &crate::db::models::PaginationParams,
+    ) -> Result<crate::db::models::PagedResponse<ManagerRecord>, ManagerStoreError> {
+        let (limit, offset) = pagination.to_limit_offset();
+        let (data, total_count) = self
+            .managers
+            .list_paginated(status_filter, limit, offset)
             .await
-            .map_err(ManagerStoreError::Database)
+            .map_err(ManagerStoreError::Database)?;
+
+        let page = pagination.page.max(1);
+        let page_size = pagination.page_size.clamp(1, crate::db::models::PaginationParams::MAX_PAGE_SIZE);
+        let has_more = offset + limit < total_count;
+
+        Ok(crate::db::models::PagedResponse {
+            data,
+            total_count,
+            page,
+            page_size,
+            has_more,
+        })
     }
 
     pub async fn approve(
@@ -140,6 +170,16 @@ impl ManagerStore {
     }
 }
 
+fn require_admin(user: &AuthenticatedUser) -> Result<(), AppError> {
+    if user.is_admin() {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "Administrator role is required".to_string(),
+        ))
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/managers/register",
@@ -153,7 +193,8 @@ impl ManagerStore {
 )]
 pub async fn register_manager_handler(
     State(state): State<Arc<crate::AppState>>,
-    Json(payload): Json<RegisterManagerRequest>,
+    ApiJson(payload): ApiJson<RegisterManagerRequest>,
+    SanitizedJson(payload): SanitizedJson<RegisterManagerRequest>,
 ) -> Result<Json<ManagerRecord>, AppError> {
     let manager = state.manager_store.register(&payload).await?;
     Ok(Json(manager))
@@ -163,20 +204,36 @@ pub async fn register_manager_handler(
     get,
     path = "/managers",
     params(
-        ("status" = Option<String>, Query, description = "Filter by status: pending, approved, rejected")
+        ("status" = Option<String>, Query, description = "Filter by status: pending, approved, rejected"),
+        ("page" = Option<u32>, Query, description = "Page number (1-indexed, default 1)"),
+        ("page_size" = Option<u32>, Query, description = "Records per page (default 50, max 200)")
     ),
     responses(
-        (status = 200, description = "List of manager records", body = Vec<ManagerRecord>)
+        (status = 200, description = "Paginated list of manager records", body = PagedResponse<ManagerRecord>)
     ),
     tag = "Managers"
 )]
 pub async fn list_managers_handler(
     State(state): State<Arc<crate::AppState>>,
+    Extension(user): Extension<AuthenticatedUser>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<Vec<ManagerRecord>>, AppError> {
+    SanitizedQuery(params): SanitizedQuery<std::collections::HashMap<String, String>>,
+) -> Result<Json<crate::db::models::PagedResponse<ManagerRecord>>, AppError> {
+    require_admin(&user)?;
     let status_filter = params.get("status").map(|s| s.as_str());
-    let managers = state.manager_store.list(status_filter).await?;
-    Ok(Json(managers))
+
+    let page: u32 = params
+        .get("page")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let page_size: u32 = params
+        .get("page_size")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+
+    let pagination = crate::db::models::PaginationParams { page, page_size };
+    let result = state.manager_store.list(status_filter, &pagination).await?;
+    Ok(Json(result))
 }
 
 #[utoipa::path(
@@ -191,8 +248,11 @@ pub async fn list_managers_handler(
 )]
 pub async fn get_manager_handler(
     State(state): State<Arc<crate::AppState>>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
+    SanitizedPath(id): SanitizedPath<String>,
 ) -> Result<Json<ManagerRecord>, AppError> {
+    require_admin(&user)?;
     let manager = state.manager_store.get(&id).await?;
     Ok(Json(manager))
 }
@@ -211,9 +271,13 @@ pub async fn get_manager_handler(
 )]
 pub async fn approve_manager_handler(
     State(state): State<Arc<crate::AppState>>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
-    Json(payload): Json<ApproveManagerRequest>,
+    ApiJson(payload): ApiJson<ApproveManagerRequest>,
+    SanitizedPath(id): SanitizedPath<String>,
+    SanitizedJson(payload): SanitizedJson<ApproveManagerRequest>,
 ) -> Result<Json<ManagerRecord>, AppError> {
+    require_admin(&user)?;
     let manager = state.manager_store.approve(&id, &payload).await?;
     Ok(Json(manager))
 }
@@ -232,9 +296,13 @@ pub async fn approve_manager_handler(
 )]
 pub async fn reject_manager_handler(
     State(state): State<Arc<crate::AppState>>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(id): Path<String>,
-    Json(payload): Json<ApproveManagerRequest>,
+    ApiJson(payload): ApiJson<ApproveManagerRequest>,
+    SanitizedPath(id): SanitizedPath<String>,
+    SanitizedJson(payload): SanitizedJson<ApproveManagerRequest>,
 ) -> Result<Json<ManagerRecord>, AppError> {
+    require_admin(&user)?;
     let manager = state.manager_store.reject(&id, &payload).await?;
     Ok(Json(manager))
 }
@@ -250,7 +318,7 @@ pub async fn reject_manager_handler(
 )]
 pub async fn check_manager_status_handler(
     State(state): State<Arc<crate::AppState>>,
-    Path(stellar_address): Path<String>,
+    SanitizedPath(stellar_address): SanitizedPath<String>,
 ) -> Result<Json<ManagerStatusResponse>, AppError> {
     let record = state
         .manager_store
@@ -310,7 +378,10 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        ManagerStore::new(db::schema::TypedSchema::new(std::sync::Arc::new(pool)).managers())
+        ManagerStore::new(
+            db::schema::TypedSchema::new(std::sync::Arc::new(db::MonitoredPool::from_inner(pool)))
+                .managers(),
+        )
     }
 
     #[tokio::test]
@@ -433,13 +504,99 @@ mod tests {
             .await
             .unwrap();
 
-        let all = store.list(None).await.unwrap();
-        assert_eq!(all.len(), 2);
+        let all = store.list(None, &crate::db::models::PaginationParams { page: 1, page_size: 50 }).await.unwrap();
+        assert_eq!(all.total_count, 2);
 
-        let pending = store.list(Some("pending")).await.unwrap();
-        assert_eq!(pending.len(), 1);
+        let pending = store.list(Some("pending"), &crate::db::models::PaginationParams { page: 1, page_size: 50 }).await.unwrap();
+        assert_eq!(pending.total_count, 1);
 
-        let approved = store.list(Some("approved")).await.unwrap();
-        assert_eq!(approved.len(), 1);
+        let approved = store.list(Some("approved"), &crate::db::models::PaginationParams { page: 1, page_size: 50 }).await.unwrap();
+        assert_eq!(approved.total_count, 1);
+    }
+
+    #[tokio::test]
+    async fn list_pagination_basic() {
+        let store = test_store().await;
+
+        // Insert 5 managers.
+        for i in 0..5u32 {
+            store
+                .register(&RegisterManagerRequest {
+                    stellar_address: format!("GA{i}"),
+                    name: format!("Manager {i}"),
+                    email: "".into(),
+                    kyc_document_ref: "".into(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let page1 = store
+            .list(None, &crate::db::models::PaginationParams { page: 1, page_size: 2 })
+            .await
+            .unwrap();
+        assert_eq!(page1.data.len(), 2);
+        assert_eq!(page1.total_count, 5);
+        assert_eq!(page1.page, 1);
+        assert_eq!(page1.page_size, 2);
+        assert!(page1.has_more);
+
+        let page2 = store
+            .list(None, &crate::db::models::PaginationParams { page: 2, page_size: 2 })
+            .await
+            .unwrap();
+        assert_eq!(page2.data.len(), 2);
+        assert!(page2.has_more);
+
+        let page3 = store
+            .list(None, &crate::db::models::PaginationParams { page: 3, page_size: 2 })
+            .await
+            .unwrap();
+        assert_eq!(page3.data.len(), 1);
+        assert!(!page3.has_more);
+    }
+
+    #[tokio::test]
+    async fn list_pagination_page_size_clamped_to_max() {
+        let store = test_store().await;
+        store
+            .register(&RegisterManagerRequest {
+                stellar_address: "GA1".into(),
+                name: "A".into(),
+                email: "".into(),
+                kyc_document_ref: "".into(),
+            })
+            .await
+            .unwrap();
+
+        // page_size of 9999 must be silently clamped to MAX (200).
+        let result = store
+            .list(None, &crate::db::models::PaginationParams { page: 1, page_size: 9999 })
+            .await
+            .unwrap();
+        assert_eq!(result.page_size, 200);
+        assert_eq!(result.total_count, 1);
+    }
+
+    #[tokio::test]
+    async fn list_empty_page_beyond_end() {
+        let store = test_store().await;
+        store
+            .register(&RegisterManagerRequest {
+                stellar_address: "GA1".into(),
+                name: "A".into(),
+                email: "".into(),
+                kyc_document_ref: "".into(),
+            })
+            .await
+            .unwrap();
+
+        let result = store
+            .list(None, &crate::db::models::PaginationParams { page: 10, page_size: 50 })
+            .await
+            .unwrap();
+        assert!(result.data.is_empty());
+        assert_eq!(result.total_count, 1);
+        assert!(!result.has_more);
     }
 }

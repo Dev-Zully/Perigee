@@ -24,6 +24,24 @@ pub struct TokenMetadata {
     pub decimals: u32,
 }
 
+/// A cached token metadata URI and the ledger at which it was written.
+#[derive(Clone)]
+#[contracttype]
+pub struct CachedUri {
+    pub uri: String,
+    pub cached_ledger: u32,
+}
+
+/// Observability view of the metadata URI cache for callers.
+#[derive(Clone)]
+#[contracttype]
+pub struct UriInfo {
+    pub uri: String,
+    pub cached_ledger: u32,
+    pub ttl: u32,
+    pub expired: bool,
+}
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -33,4 +51,8 @@ pub enum DataKey {
     State(Address),
     /// Single instance key replacing Name + Symbol + Decimals.
     Metadata,
+    /// Cached token metadata URI validated before write.
+    UriCache,
+    /// Lifetime (in ledgers) before the cached URI is considered stale.
+    UriTtl,
 }

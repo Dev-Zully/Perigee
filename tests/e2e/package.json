@@ -1,0 +1,14 @@
+{
+  "name": "perigee-e2e",
+  "version": "1.0.0",
+  "description": "End-to-end test suite for the Perigee API against Stellar testnet (API-40).",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-reporter=spec api.e2e.test.mjs",
+    "test:verbose": "node --test --test-reporter=tap api.e2e.test.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

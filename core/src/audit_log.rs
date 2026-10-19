@@ -46,8 +46,10 @@
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Mutex, OnceLock};
 use thiserror::Error;
 use tracing::{info, warn};
@@ -59,6 +61,64 @@ pub const GENESIS_HASH: &str = "000000000000000000000000000000000000000000000000
 
 /// Environment variable holding the hex-encoded signing key.
 pub const SIGNING_KEY_ENV: &str = "AUDIT_LOG_SIGNING_KEY";
+
+/// Security-sensitive event types for audit logging and security monitoring (Issue #398).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SecurityEventType {
+    LoginSuccess,
+    LoginFailed,
+    TokenRefreshed,
+    TokenRevoked,
+    TokenExpired,
+    UnauthorizedAccess,
+    /// A caller was authenticated but lacked the authorization (role/privilege)
+    /// required for the requested operation.
+    AuthorizationDenied,
+    VaultAccessDenied,
+    AgentDisabled,
+    JwtKeyRotated,
+}
+
+impl SecurityEventType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SecurityEventType::LoginSuccess => "LOGIN_SUCCESS",
+            SecurityEventType::LoginFailed => "LOGIN_FAILED",
+            SecurityEventType::TokenRefreshed => "TOKEN_REFRESHED",
+            SecurityEventType::TokenRevoked => "TOKEN_REVOKED",
+            SecurityEventType::TokenExpired => "TOKEN_EXPIRED",
+            SecurityEventType::UnauthorizedAccess => "UNAUTHORIZED_ACCESS",
+            SecurityEventType::AuthorizationDenied => "AUTHORIZATION_DENIED",
+            SecurityEventType::VaultAccessDenied => "VAULT_ACCESS_DENIED",
+            SecurityEventType::AgentDisabled => "AGENT_DISABLED",
+            SecurityEventType::JwtKeyRotated => "JWT_KEY_ROTATED",
+        }
+    }
+}
+
+impl fmt::Display for SecurityEventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Structured security audit event matching Issue #398 specification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityAuditEvent {
+    pub event: SecurityEventType,
+    #[serde(rename = "agentId", skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(rename = "vaultId", skip_serializing_if = "Option::is_none")]
+    pub vault_id: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, String>>,
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AuditChainError {
@@ -308,19 +368,134 @@ pub fn log_audit_event(manager_id: &str, action: &str, actor: &str) {
 
     let event = chain.append(manager_id, action, actor, Utc::now()).clone();
 
+    let redactor = crate::log_redaction::LogRedactor::new("perigee-log-redaction");
+    let redacted_manager = redactor.redact_address(&event.manager_id);
+    let redacted_actor = redactor.redact_address(&event.actor);
     info!(
         target: "audit_log",
         sequence = event.sequence,
-        manager_id = %event.manager_id,
+        manager_id = %redacted_manager,
         action = %event.action,
-        actor = %event.actor,
+        actor = %redacted_actor,
         timestamp = %event.timestamp.to_rfc3339(),
         prev_hash = %event.prev_hash,
         entry_hash = %event.entry_hash,
         "AUDIT: {} by {}",
         event.action,
-        event.actor
+        redacted_actor
     );
+}
+
+/// Record a security-sensitive event with structured JSON logging and tamper-evident chaining.
+///
+/// This records events such as:
+/// - `LOGIN_SUCCESS`
+/// - `LOGIN_FAILED`
+/// - `TOKEN_REFRESHED`
+/// - `TOKEN_REVOKED`
+/// - `TOKEN_EXPIRED`
+/// - `UNAUTHORIZED_ACCESS`
+/// - `AUTHORIZATION_DENIED`
+/// - `VAULT_ACCESS_DENIED`
+/// - `AGENT_DISABLED`
+/// - `JWT_KEY_ROTATED`
+///
+/// Output format matches:
+/// `{"event": "VAULT_ACCESS_DENIED","agentId": "...","vaultId": "...","timestamp": "...","ip": "...","reason": "..."}`
+pub fn log_security_event(
+    event: SecurityEventType,
+    agent_id: Option<&str>,
+    vault_id: Option<&str>,
+    ip: Option<&str>,
+    reason: Option<&str>,
+) -> SecurityAuditEvent {
+    let now = Utc::now();
+
+    let manager_id = agent_id.unwrap_or("system");
+    let action = event.as_str();
+    let actor = ip.unwrap_or(agent_id.unwrap_or("unknown"));
+
+    let mut chain = global_chain()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let chain_entry = chain.append(manager_id, action, actor, now.clone()).clone();
+
+    let sec_event = SecurityAuditEvent {
+        event,
+        agent_id: agent_id.map(|s| s.to_string()),
+        vault_id: vault_id.map(|s| s.to_string()),
+        timestamp: now,
+        ip: ip.map(|s| s.to_string()),
+        reason: reason.map(|s| s.to_string()),
+        metadata: None,
+    };
+
+    let redactor = crate::log_redaction::LogRedactor::new("perigee-log-redaction");
+    let redacted_agent_id = sec_event
+        .agent_id
+        .as_deref()
+        .map(|value| redactor.redact_address(value));
+    let redacted_vault_id = sec_event
+        .vault_id
+        .as_deref()
+        .map(|value| redactor.redact_vault_id(value));
+    let redacted_ip = sec_event.ip.as_deref().map(|value| redactor.redact_address(value));
+    let redacted_reason = sec_event
+        .reason
+        .as_deref()
+        .map(crate::log_redaction::redact_sensitive_text);
+
+    info!(
+        target: "audit_log",
+        sequence = chain_entry.sequence,
+        event = %sec_event.event.as_str(),
+        agent_id = ?redacted_agent_id,
+        vault_id = ?redacted_vault_id,
+        timestamp = %sec_event.timestamp.to_rfc3339(),
+        ip = ?redacted_ip,
+        reason = ?redacted_reason,
+        prev_hash = %chain_entry.prev_hash,
+        entry_hash = %chain_entry.entry_hash,
+        "SECURITY_AUDIT: {}",
+        sec_event.event.as_str()
+    );
+
+    sec_event
+}
+
+/// Record a security-sensitive event and optionally increment Prometheus security metrics.
+pub fn log_security_event_with_metrics(
+    event: SecurityEventType,
+    agent_id: Option<&str>,
+    vault_id: Option<&str>,
+    ip: Option<&str>,
+    reason: Option<&str>,
+    status: Option<&str>,
+    metrics: Option<&crate::metrics::Metrics>,
+) -> SecurityAuditEvent {
+    let sec_event = log_security_event(event, agent_id, vault_id, ip, reason);
+
+    if let Some(metrics) = metrics {
+        let status_label = status.unwrap_or(match event {
+            SecurityEventType::LoginSuccess
+            | SecurityEventType::TokenRefreshed
+            | SecurityEventType::TokenRevoked
+            | SecurityEventType::AgentDisabled
+            | SecurityEventType::JwtKeyRotated => "success",
+            SecurityEventType::LoginFailed
+            | SecurityEventType::TokenExpired
+            | SecurityEventType::UnauthorizedAccess
+            | SecurityEventType::AuthorizationDenied
+            | SecurityEventType::VaultAccessDenied => "denied",
+        });
+        metrics
+            .security_audit_events_total
+            .with_label_values(&[event.as_str(), status_label])
+            .inc();
+    }
+
+    sec_event
 }
 
 /// Verify the process-wide chain.
@@ -537,5 +712,96 @@ mod tests {
             hex::encode(mac.finalize().into_bytes()),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
+    }
+
+    #[test]
+    fn test_security_event_types_formatting_and_str() {
+        assert_eq!(SecurityEventType::LoginSuccess.as_str(), "LOGIN_SUCCESS");
+        assert_eq!(SecurityEventType::LoginFailed.as_str(), "LOGIN_FAILED");
+        assert_eq!(
+            SecurityEventType::TokenRefreshed.as_str(),
+            "TOKEN_REFRESHED"
+        );
+        assert_eq!(SecurityEventType::TokenRevoked.as_str(), "TOKEN_REVOKED");
+        assert_eq!(SecurityEventType::TokenExpired.as_str(), "TOKEN_EXPIRED");
+        assert_eq!(
+            SecurityEventType::UnauthorizedAccess.as_str(),
+            "UNAUTHORIZED_ACCESS"
+        );
+        assert_eq!(
+            SecurityEventType::AuthorizationDenied.as_str(),
+            "AUTHORIZATION_DENIED"
+        );
+        assert_eq!(
+            SecurityEventType::VaultAccessDenied.as_str(),
+            "VAULT_ACCESS_DENIED"
+        );
+        assert_eq!(SecurityEventType::AgentDisabled.as_str(), "AGENT_DISABLED");
+        assert_eq!(SecurityEventType::JwtKeyRotated.as_str(), "JWT_KEY_ROTATED");
+    }
+
+    #[test]
+    fn test_log_security_event_serialization() {
+        let event = log_security_event(
+            SecurityEventType::VaultAccessDenied,
+            Some("agent-123"),
+            Some("vault-456"),
+            Some("192.168.1.100"),
+            Some("Agent not authorized for vault"),
+        );
+
+        assert_eq!(event.event, SecurityEventType::VaultAccessDenied);
+        assert_eq!(event.agent_id.as_deref(), Some("agent-123"));
+        assert_eq!(event.vault_id.as_deref(), Some("vault-456"));
+        assert_eq!(event.ip.as_deref(), Some("192.168.1.100"));
+        assert_eq!(
+            event.reason.as_deref(),
+            Some("Agent not authorized for vault")
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""event":"VAULT_ACCESS_DENIED""#));
+        assert!(json.contains(r#""agentId":"agent-123""#));
+        assert!(json.contains(r#""vaultId":"vault-456""#));
+        assert!(json.contains(r#""ip":"192.168.1.100""#));
+        assert!(json.contains(r#""reason":"Agent not authorized for vault""#));
+        assert!(json.contains(r#""timestamp":""#));
+    }
+
+    #[test]
+    fn test_authorization_denied_serialization() {
+        let event = log_security_event(
+            SecurityEventType::AuthorizationDenied,
+            Some("GTENANT"),
+            None,
+            None,
+            Some("Admin privileges required to perform this action"),
+        );
+
+        assert_eq!(event.event, SecurityEventType::AuthorizationDenied);
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""event":"AUTHORIZATION_DENIED""#));
+        assert!(json.contains(r#""agentId":"GTENANT""#));
+        assert!(json.contains(r#""reason":"Admin privileges required to perform this action""#));
+    }
+
+    #[test]
+    fn test_log_security_event_with_metrics() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let _ = log_security_event_with_metrics(
+            SecurityEventType::LoginSuccess,
+            Some("GBTEST..."),
+            None,
+            Some("127.0.0.1"),
+            None,
+            None,
+            Some(&metrics),
+        );
+        let metric_count = metrics
+            .security_audit_events_total
+            .with_label_values(&["LOGIN_SUCCESS", "success"])
+            .get();
+        assert_eq!(metric_count, 1);
     }
 }

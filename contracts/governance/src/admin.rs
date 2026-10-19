@@ -1,5 +1,5 @@
 use crate::storage_types::DataKey;
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{address, Env};
 
 pub fn has_administrator(e: &Env) -> bool {
     let key = DataKey::Config;
@@ -20,16 +20,16 @@ pub fn write_administrator(e: &Env, id: &Address) {
 
 pub fn read_config(e: &Env) -> crate::storage_types::GovernanceConfig {
     let key = DataKey::Config;
-    e.storage().instance().get(&key).unwrap_or_else(|| {
+    e.storage().instance().get(&key).unwrap_or_else()|| {
         // Default config
         crate::storage_types::GovernanceConfig {
             admin: Address::generate(e),
-            voting_period: 7 * 24 * 60 * 60, // 7 days
-            timelock_delay: 2 * 24 * 60 * 60, // 2 days
-            quorum_percentage: 10, // 10%
+            voting_period: 7 * 24 * 60 * 60,
+            timelock_delay: 2 * 24 * 60 * 60,
+            quorum_percentage: 10,
             proposal_count: 0,
         }
-    })
+    }
 }
 
 pub fn write_config(e: &Env, config: &crate::storage_types::GovernanceConfig) {

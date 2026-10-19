@@ -2899,7 +2899,7 @@ impl EmergencyGuardTrait for LiquidityPool {
         DefaultEmergencyGuard::get_threshold(env)
     }
 
-    fn is_admin(env: &Env, addr: Address) -> bool {
+    fn is_admin(env: &Env, addr: &Address) -> bool {
         DefaultEmergencyGuard::is_admin(env, addr)
     }
 }

@@ -34,6 +34,7 @@ dependencies = [
  "soroban-sdk",
  "sqlx",
  "stellar-strkey",
+ "subtle",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -47,10 +48,26 @@ dependencies = [
  "uuid",
  "wasm-encoder",
  "wasmparser 0.240.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
 name = "Perigee-error-codes"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "Perigee-governance-contract"
+version = "0.1.0"
+dependencies = [
+ "emergency_guard",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "Perigee-guards"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
@@ -1139,6 +1156,7 @@ dependencies = [
 name = "emergency_guard"
 version = "0.1.0"
 dependencies = [
+ "Perigee-guards",
  "soroban-sdk",
 ]
 
@@ -2334,6 +2352,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oracle-aggregator"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "ordered-multimap"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2456,6 +2481,139 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "perigee-access-control"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-basket-vault"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-dynamic-fees"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-erc4626-vault"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-fee-engine"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-fee-switch"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-policy-vault"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-protocol-owned-liquidity"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-referral"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-strategy-analytics"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-strategy-composability"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-strategy-orchestration"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-vault-accounting"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-vault-factory"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-vault-guard"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-vault-insurance"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-vault-metadata"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "perigee-vault-strategy"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
 
 [[package]]
 name = "pest"

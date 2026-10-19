@@ -1,5 +1,4 @@
-use crate::admin::{read_administrator, read_config, write_administrator, write_config};
-use crate::proposal::{cancel_proposal, create_proposal, execute_proposal, queue_proposal, read_proposal, start_voting};
+use crate::admin {:use crate::proposal {cancel_proposal, create_proposal, execute_proposal, queue_proposal, read_proposal, start_voting};
 use crate::storage_types::{GovernanceConfig, Proposal, ProposalAction, ProposalState};
 use crate::voting::{delegate_voting_power, get_effective_voting_power, read_voting_power, vote, write_voting_power};
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
