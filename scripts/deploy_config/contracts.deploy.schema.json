@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/OdyxeeeLabs/Perigee/blob/main/scripts/deploy_config/contracts.deploy.schema.json",
+  "title": "Perigee per-contract deployment configuration",
+  "description": "Describes the deployment-time configuration for every on-chain Perigee contract. Each contract reads its core configuration (admin, initial supply, time parameters) from these values instead of hardcoding them, and a validated copy of the file drives the deployment tooling.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["network", "stage", "contracts"],
+  "properties": {
+    "network": {
+      "type": "string",
+      "enum": ["local", "testnet", "mainnet"],
+      "description": "Network the deployment targets. Mapped to $STELLAR_NETWORK for the core service."
+    },
+    "stage": {
+      "type": "string",
+      "enum": ["development", "staging", "production"],
+      "description": "Deployment stage. Mapped to $APP_ENV for the core service."
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "emergency_guard", "oracle_aggregator", "twap_oracle", "staking_rewards", "proxy"],
+      "properties": {
+        "token": { "$ref": "#/definitions/contract" },
+        "emergency_guard": { "$ref": "#/definitions/emergencyGuard" },
+        "oracle_aggregator": { "$ref": "#/definitions/oracle" },
+        "twap_oracle": { "$ref": "#/definitions/twapOracle" },
+        "staking_rewards": { "$ref": "#/definitions/contract" },
+        "proxy": { "$ref": "#/definitions/proxy" }
+      }
+    }
+  },
+  "definitions": {
+    "address": {
+      "type": "string",
+      "pattern": "^[GAC][A-Za-z0-9]{55}$",
+      "description": "Stellar public key (G...) or contract id (C...) in StrKey format."
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["admin", "params"],
+      "properties": {
+        "admin": { "$ref": "#/definitions/address" },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Contract-specific initialize parameters (e.g. decimals, name, symbol, initial_supply). Values are passed verbatim to the initialize entry point."
+        }
+      }
+    },
+    "emergencyGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["admins", "threshold"],
+      "properties": {
+        "admins": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/address" }
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Signatures required to perform guard administrative actions. Must be <= admins length."
+        }
+      }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_staleness_seconds"],
+      "properties": {
+        "max_staleness_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum age of a price before it is considered stale. 0 disables staleness checks."
+        }
+      }
+    },
+    "twapOracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token_a", "token_b", "min_update_interval_seconds"],
+      "properties": {
+        "token_a": { "$ref": "#/definitions/address" },
+        "token_b": { "$ref": "#/definitions/address" },
+        "min_update_interval_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["admin", "initial_implementation"],
+      "properties": {
+        "admin": { "$ref": "#/definitions/address" },
+        "initial_implementation": { "$ref": "#/definitions/address" }
+      }
+    }
+  }
+}

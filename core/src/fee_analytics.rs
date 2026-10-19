@@ -8,7 +8,7 @@
 
 #![allow(clippy::unnecessary_cast)]
 
-use crate::fee_store::LedgerFeeSample;
+use crate::fee::persistence::LedgerFeeSample;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -87,6 +87,7 @@ pub struct MarketConditions {
 
 /// Analytics engine. All arithmetic is integer — no `f64` is multiplied
 /// against a stroop amount anywhere.
+#[derive(Clone)]
 pub struct FeeAnalyticsEngine {
     /// SMA window for short-term (default: 10).
     sma_short_window: usize,
@@ -330,10 +331,19 @@ impl FeeAnalyticsEngine {
         ema.max(0) as u64
     }
 
-    /// Percentile with linear interpolation in basis points.
+    /// Percentile with linear interpolation, on a fixed-point scale where
+    /// `100_000` is the 100th percentile.
     ///
-    /// `percentile_bps` is `0..=10_000` (e.g. 9_500 = 95th percentile).
-    fn calculate_percentile(&self, data: &[i64], percentile_bps: u64) -> u64 {
+    /// `percentile_scaled` is `0..=100_000` — 50_000 is the median, 95_000 the
+    /// 95th percentile. That is the scale every call site uses, including
+    /// `analyze_ledger_fees` and `model_breakdown`, but the arithmetic below
+    /// divided by 10_000 as though the argument were true basis points. On a
+    /// 5-element sample that computed a lower index of 20 and panicked with an
+    /// out-of-bounds slice access on every call.
+    ///
+    /// `lower` is also clamped now. `upper` always was, so a bad argument
+    /// could only ever fault on the lower bound.
+    fn calculate_percentile(&self, data: &[i64], percentile_scaled: u64) -> u64 {
         if data.is_empty() {
             return 0;
         }
@@ -346,10 +356,11 @@ impl FeeAnalyticsEngine {
         }
         let last_index = (n - 1) as u64;
 
-        // lower = floor(percentile_bps / 10_000 * last_index)
-        let scaled = last_index.saturating_mul(percentile_bps);
-        let lower = (scaled / 10_000) as usize;
-        let remainder = scaled % 10_000; // bps weight between lower and lower+1
+        // lower = floor(percentile_scaled / 100_000 * last_index)
+        const FULL_SCALE: u64 = 100_000;
+        let scaled = last_index.saturating_mul(percentile_scaled);
+        let lower = ((scaled / FULL_SCALE) as usize).min(n - 1);
+        let remainder = scaled % FULL_SCALE; // weight between lower and lower+1
         let upper = (lower + 1).min(n - 1);
 
         let lo = sorted[lower].max(0) as u64;
@@ -357,12 +368,9 @@ impl FeeAnalyticsEngine {
             return lo;
         }
         let hi = sorted[upper].max(0) as u64;
-        // Linear interpolation using basis-point weight: ceil((hi - lo) * w / 10000) + lo
-        // Using floor here matches standard nearest-rank behaviour with floor;
-        // the rounded value equals round-via-half-up for the typical small
-        // differences we're interpolating over.
-        let interpolated = lo + (hi - lo).saturating_mul(remainder) / 10_000;
-        interpolated
+        // Linear interpolation between the two neighbouring ranks, weighted by
+        // the remainder on the same 100_000 scale.
+        lo + (hi - lo).saturating_mul(remainder) / FULL_SCALE
     }
 
     /// Standard deviation in stroops. Variance is integer; the square root
@@ -432,7 +440,7 @@ impl Default for FeeAnalyticsEngine {
 #[inline]
 pub(crate) fn ceil_mul_bps(x: u64, bps: u64) -> u64 {
     let prod = (x as u128).saturating_mul(bps as u128);
-    ((prod + 9_999) / 10_000) as u64
+    prod.div_ceil(10_000) as u64
 }
 
 /// Compute `(numerator / denominator) * scale` as basis points.
@@ -440,13 +448,16 @@ pub(crate) fn ceil_mul_bps(x: u64, bps: u64) -> u64 {
 /// for plain percentage rounding. Returns `0` when `denominator == 0`.
 #[inline]
 pub(crate) fn ratio_to_bps(numerator: u64, denominator: u64, scale: u64) -> u32 {
-    if denominator == 0 {
-        return 0;
+    // BE-025: delegate to the protocol's single rounding strategy rather than
+    // repeating the arithmetic. `scale` multiplies the numerator, matching the
+    // previous behaviour, and the shared helper floors and saturates at 100%.
+    let scaled_numerator = (numerator as u128) * (scale as u128);
+
+    if scaled_numerator > u64::MAX as u128 {
+        return crate::rounding::BPS_DENOMINATOR as u32;
     }
-    let n = numerator as u128;
-    let d = denominator as u128;
-    let s = scale as u128;
-    ((n * 10_000 * s) / d).min(10_000) as u32
+
+    crate::rounding::ratio_to_bps(scaled_numerator as u64, denominator) as u32
 }
 
 /// Integer square root (Newton's method, floored).
@@ -455,7 +466,7 @@ pub(crate) fn integer_sqrt(n: u64) -> u64 {
         return 0;
     }
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + n / x) / 2;
@@ -466,7 +477,7 @@ pub(crate) fn integer_sqrt(n: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fee_store::LedgerFeeSample;
+    use crate::fee::persistence::LedgerFeeSample;
     use chrono::Utc;
 
     fn create_sample(ledger: i64, base_fee: i64) -> LedgerFeeSample {
@@ -628,6 +639,12 @@ use std::collections::HashMap;
 
 pub struct AssetHwmTracker {
     hwm: HashMap<String, f64>,
+}
+
+impl Default for AssetHwmTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AssetHwmTracker {

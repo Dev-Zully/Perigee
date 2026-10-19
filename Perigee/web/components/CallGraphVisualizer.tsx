@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import mermaid from 'mermaid';
+import { useReducedMotion } from 'framer-motion';
 import { logger } from '../lib/logger';
 
 interface CallGraphVisualizerProps {
@@ -10,6 +11,7 @@ interface CallGraphVisualizerProps {
 
 export function CallGraphVisualizer({ mermaidDefinition }: CallGraphVisualizerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
     mermaid.initialize({
@@ -21,8 +23,13 @@ export function CallGraphVisualizer({ mermaidDefinition }: CallGraphVisualizerPr
         htmlLabels: true,
         curve: 'basis',
       },
+      ...(reducedMotion
+        ? {
+            themeCSS: `** { animation: none !important; transition: none !important; }`,
+          }
+        : {}),
     });
-  }, []);
+  }, [reducedMotion]);
 
   useEffect(() => {
     const renderMermaid = async () => {

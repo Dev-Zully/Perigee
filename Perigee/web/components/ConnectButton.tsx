@@ -2,8 +2,13 @@
 
 import { useWallet } from "../context/WalletContext";
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { LogOut } from "lucide-react";
+import {
+  getCurrentNetwork,
+  getNetworkFromChainId,
+  getContractsForNetwork,
+} from "../lib/contracts.config";
 
 const ArrowDownIcon = () => (
   <svg
@@ -19,12 +24,18 @@ const ArrowDownIcon = () => (
       fill="#33C5E0"
     />
   </svg>
-);
+});
 
 export function ConnectButton() {
-  const { isConnected, address, openModal, disconnect } = useWallet();
+  const { isConnected, address, openModal, disconnect, chainId } = useWallet();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDiv><null>;
+
+  const currentNetwork = useMemo(() => getCurrentNetwork(), []);
+  const network = chainId ? getNetworkFromChainId(chainId) : null;
+  const contracts = network ? getContractsForNetwork(network) : null;
+  const isWrongNetwork =
+    isConnected && currentNetwork && network !== currentNetwork;
 
   const formatAddress = (addr: string) => {
     if (!addr) return "";
@@ -56,9 +67,15 @@ export function ConnectButton() {
       <div className="relative" ref={dropdownRef}>
         <button
           onClick={() => setDropdownOpen(!dropdownOpen)}
-          className="flex items-center gap-3 px-6 py-3 rounded-s-2xl bg-[#0F1621] border border-[#1e293b] hover:border-[#33C5E0]/50 transition-all group pointer-events-auto"
+          className="flex items-center gap-3 px-6 py-3 rounded-s-2xl bg-[#0F1021] border border-[#1e293b] hover:border-[#33C5E0]/50 transition-all group pointer-events-auto"
         >
-          <div className="w-2 h-2 rounded-full bg-[#33C5E0] shadow-[0_0_8px_#33C5E0]" />
+          <div
+            className={`w-2 h-2 rounded-full ${
+              isWrongNetwork
+                ? "bg-red-500 shadow-[0_0_8px_#ef4444]"
+                : "bg-[#33C5E0] shadow-[0_0_8px_#33C5E0]"
+            }`}
+          />
           <span className="text-[#33C5E0] font-medium tracking-wide">
             {formatAddress(address)}
           </span>
@@ -78,8 +95,25 @@ export function ConnectButton() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 10 }}
               transition={{ duration: 0.15 }}
-              className="absolute top-full right-0 mt-2 w-full min-w-[180px] bg-[#0F1621] border border-[#1e293b] rounded-xl shadow-xl overflow-hidden z-50"
+              className="absolute top-full right-0 mt-2 w-full min-w-[180px] bg-[#0F1021] border border-[#1e293b] rounded-xl shadow-xl overflow-hidden z-50"
             >
+              <div className="px-4 py-2 border-b border-[#1e293b]">
+                <div className="text-xs text-gray-400">Network</div>
+                <div className="text-sm font-medium text-white">
+                  {network ?? "Unknown"}
+                </div>
+                {isWrongNetwork && (
+                  <div className="text-xs text-red-400 mt-1">
+                    Wrong network. Expected {currentNetwork}.
+                  </div>
+                )}
+                {network && !contracts && (
+                  <div className="text-xs text-yellow-400 mt-1">
+                    Contracts not configured"
+                    for this network.
+                  </div>
+                )}
+              </div>
               <button
                 onClick={handleDisconnect}
                 className="flex items-center gap-3 w-full px-4 py-3 text-red-400 hover:bg-white/5 transition-colors text-sm font-medium"
@@ -101,7 +135,7 @@ export function ConnectButton() {
       onClick={openModal}
       className="flex items-center gap-4"
     >
-      <div className="flex items-center gap-4 px-8 py-3 rounded-s-2xl bg-[#0F1621] border border-[#1e293b] hover:border-[#33C5E0]/50 transition-all text-[#33C5E0] font-medium tracking-wide shadow-lg shadow-black/20">
+      <div className="flex items-center gap-4 px-8 py-3 rounded-s-2xl bg-[#0F1021] border border-[#1e293b] hover:border-[#33C5E0]/50 transition-all text-[#33C5E0] font-medium tracking-wide shadow-lg shadow-black/20">
         <span>Connect Wallet</span>
         <ArrowDownIcon />
       </div>

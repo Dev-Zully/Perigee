@@ -1,5 +1,29 @@
 #![allow(dead_code)]
 
+//! Agent reputation scoring with exponential time-decay.
+//!
+//! ## Decay Formula
+//!
+//! The reputation score decays exponentially over time according to:
+//!
+//! ```text
+//! S(t) = S₀ × e^(-λ × Δt)
+//! ```
+//!
+//! Where:
+//! - `S(t)` = score at time t
+//! - `S₀` = base score (set when last updated)
+//! - `λ` = decay rate (higher = faster decay)
+//! - `Δt` = elapsed time in days since last update
+//!
+//! The score is floored at 0.0 and cannot go negative.
+//!
+//! ## Score Bounds
+//!
+//! - **Minimum:** 0.0 (fully decayed / penalized)
+//! - **Maximum:** No cap (add_score accumulates freely)
+//! - **Clamping:** Both `apply_decay` and `add_score` ensure score ≥ 0.0
+
 use chrono::{DateTime, Duration, Utc};
 
 pub struct ReputationRecord {
@@ -67,5 +91,48 @@ mod tests {
         let far_future = Utc::now() + Duration::days(365);
         record.apply_decay(far_future);
         assert!(record.score >= 0.0);
+    }
+
+    #[test]
+    fn test_initial_score_unchanged() {
+        let record = ReputationRecord::new("agent1".to_string(), 100.0, 0.1);
+        let score = record.current_score(record.last_updated);
+        assert!((score - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_score_floor_at_zero() {
+        let mut record = ReputationRecord::new("agent1".to_string(), 10.0, 10.0);
+        let far_future = Utc::now() + Duration::days(365);
+        record.apply_decay(far_future);
+        assert_eq!(record.score, 0.0);
+    }
+
+    #[test]
+    fn test_decay_rate_zero_no_decay() {
+        let record = ReputationRecord::new("agent1".to_string(), 100.0, 0.0);
+        let later = Utc::now() + Duration::days(365);
+        let score = record.current_score(later);
+        assert!((score - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_add_score_can_exceed_initial() {
+        let mut record = ReputationRecord::new("agent1".to_string(), 100.0, 0.0);
+        record.add_score(50.0, Utc::now());
+        assert!((record.score - 150.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_boundary_max_inactivity() {
+        let mut record = ReputationRecord::new("agent1".to_string(), 100.0, 0.1);
+        // `Duration::days(i64::MAX / 2)` is outside chrono's representable
+        // range, so it panicked inside `TimeDelta::days` before this test
+        // reached the decay code at all. A thousand years is still far past
+        // the point where `exp(-0.1 * days)` underflows to exactly 0.0, which
+        // is the boundary this test is about.
+        let far_future = Utc::now() + Duration::days(365_000);
+        let score = record.current_score(far_future);
+        assert_eq!(score, 0.0);
     }
 }

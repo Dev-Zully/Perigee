@@ -1,12 +1,30 @@
 use crate::simulation::{SimulationEngine, SimulationError, SorobanResources};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
+use tracing::warn;
 use utoipa::ToSchema;
 
 // ── Regression threshold ─────────────────────────────────────────────────────
 
 /// Any resource that increases by more than this percentage is flagged.
 const REGRESSION_THRESHOLD: f64 = 10.0;
+
+// ── Errors ───────────────────────────────────────────────────────────────────
+
+/// Errors raised while preparing or running a contract comparison.
+#[derive(Debug, thiserror::Error)]
+pub enum ComparisonError {
+    /// The historical (baseline) data needed for a meaningful comparison is
+    /// missing or incomplete (e.g. a brand-new asset with no prior runs, or an
+    /// API outage during history collection). Returned instead of panicking.
+    #[error("Insufficient historical data: {0}")]
+    InsufficientData(String),
+
+    /// The underlying simulation failed.
+    #[error(transparent)]
+    Simulation(#[from] SimulationError),
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -83,7 +101,15 @@ pub struct RegressionReport {
 pub async fn run_comparison(
     engine: &SimulationEngine,
     mode: CompareMode,
-) -> Result<RegressionReport, SimulationError> {
+) -> Result<RegressionReport, ComparisonError> {
+    run_comparison_with_cancellation(engine, mode, CancellationToken::new()).await
+}
+
+pub async fn run_comparison_with_cancellation(
+    engine: &SimulationEngine,
+    mode: CompareMode,
+    cancellation: CancellationToken,
+) -> Result<RegressionReport, ComparisonError> {
     let (current_resources, base_resources) = match mode {
         CompareMode::LocalVsLocal {
             current_wasm,
@@ -97,8 +123,24 @@ pub async fn run_comparison(
             let base_id = base_wasm.to_string_lossy().to_string();
 
             let (current_result, base_result) = tokio::join!(
-                engine.simulate_from_contract_id(&current_id, "compare", vec![], None, None, None),
-                engine.simulate_from_contract_id(&base_id, "compare", vec![], None, None, None)
+                engine.simulate_from_contract_id_with_cancellation(
+                    &current_id,
+                    "compare",
+                    vec![],
+                    None,
+                    None,
+                    None,
+                    cancellation.clone(),
+                ),
+                engine.simulate_from_contract_id_with_cancellation(
+                    &base_id,
+                    "compare",
+                    vec![],
+                    None,
+                    None,
+                    None,
+                    cancellation.clone(),
+                )
             );
 
             (current_result?.resources, base_result?.resources)
@@ -112,27 +154,34 @@ pub async fn run_comparison(
             let current_id = current_wasm.to_string_lossy().to_string();
 
             let (current_result, base_result) = tokio::join!(
-                engine.simulate_from_contract_id(
+                engine.simulate_from_contract_id_with_cancellation(
                     &current_id,
                     &function_name,
                     args.clone(),
                     None,
                     None,
                     None,
+                    cancellation.clone(),
                 ),
-                engine.simulate_from_contract_id(
+                engine.simulate_from_contract_id_with_cancellation(
                     &contract_id,
                     &function_name,
                     args,
                     None,
                     None,
-                    None
+                    None,
+                    cancellation,
                 )
             );
 
             (current_result?.resources, base_result?.resources)
         }
     };
+
+    // The "base" resources represent the historical baseline. Comparing against
+    // empty/missing history is meaningless and previously led to panics down
+    // the line. Surface it as a clear error (or a warning for partial data).
+    validate_baseline(&base_resources)?;
 
     Ok(build_report(current_resources, base_resources))
 }
@@ -166,6 +215,83 @@ pub fn build_report(current: SorobanResources, base: SorobanResources) -> Regres
         regression_flags,
         summary,
     }
+}
+
+// ── Historical data handling ─────────────────────────────────────────────────
+//
+// The comparison module treats the "base" (reference) resources as the
+// historical baseline. When that baseline is missing or only partial we must
+// not panic — we return a clear `InsufficientData` error, or warn when the
+// baseline is usable but incomplete.
+
+/// True when every metric of the snapshot is zero (i.e. it carries no
+/// information at all).
+fn is_empty_resources(r: &SorobanResources) -> bool {
+    r.cpu_instructions == 0
+        && r.ram_bytes == 0
+        && r.ledger_read_bytes == 0
+        && r.ledger_write_bytes == 0
+        && r.transaction_size_bytes == 0
+}
+
+/// True when the snapshot has *some* but not *all* metrics populated. Such a
+/// baseline is usable for comparison but should be flagged to the operator.
+fn is_partial(r: &SorobanResources) -> bool {
+    !is_empty_resources(r)
+        && (r.cpu_instructions == 0
+            || r.ram_bytes == 0
+            || r.ledger_read_bytes == 0
+            || r.ledger_write_bytes == 0
+            || r.transaction_size_bytes == 0)
+}
+
+/// Validate a historical baseline snapshot.
+///
+/// - Returns [`ComparisonError::InsufficientData`] when the baseline is empty
+///   (no historical data at all).
+/// - Logs a warning when the baseline is only partially populated, then
+///   succeeds so the comparison can still proceed using the data that exists.
+pub fn validate_baseline(baseline: &SorobanResources) -> Result<(), ComparisonError> {
+    if is_empty_resources(baseline) {
+        return Err(ComparisonError::InsufficientData(
+            "historical baseline contains no data points; cannot establish a baseline".to_string(),
+        ));
+    }
+
+    if is_partial(baseline) {
+        warn!(
+            "Partial historical data detected; using oldest available baseline with some zeroed metrics"
+        );
+    }
+
+    Ok(())
+}
+
+/// Select the baseline from a chronological series of historical samples
+/// (oldest first). Returns the oldest available data point as the baseline.
+///
+/// Returns [`ComparisonError::InsufficientData`] when no samples are available.
+pub fn select_baseline(
+    historical: &[SorobanResources],
+) -> Result<SorobanResources, ComparisonError> {
+    let baseline = historical.first().ok_or_else(|| {
+        ComparisonError::InsufficientData(
+            "no historical data points available; cannot establish a baseline".to_string(),
+        )
+    })?;
+
+    validate_baseline(baseline)?;
+    Ok(baseline.clone())
+}
+
+/// Compare a current snapshot against a chronological series of historical
+/// samples, using the oldest available data point as the baseline.
+pub fn compare_against_history(
+    current: SorobanResources,
+    historical: &[SorobanResources],
+) -> Result<RegressionReport, ComparisonError> {
+    let baseline = select_baseline(historical)?;
+    Ok(build_report(current, baseline))
 }
 
 /// Compute percentage change for each resource metric.
@@ -226,15 +352,15 @@ fn pct_change(current: u64, base: u64) -> f64 {
 
 /// Pretty-print a `RegressionReport` to stdout (used by the CLI).
 pub fn print_report(report: &RegressionReport) {
-    println!("\n{}", "=".repeat(60));
-    println!("  Perigee — Contract Regression Report");
-    println!("{}\n", "=".repeat(60));
+    tracing::info!("\n{}", "=".repeat(60));
+    tracing::info!("  Perigee — Contract Regression Report");
+    tracing::info!("{}\n", "=".repeat(60));
 
-    println!(
+    tracing::info!(
         "  {:<25} {:>12} {:>12} {:>10}",
         "Metric", "Current", "Base", "Delta"
     );
-    println!("  {}", "-".repeat(59));
+    tracing::info!("  {}", "-".repeat(59));
 
     print_metric_row(
         "CPU Instructions",
@@ -267,17 +393,17 @@ pub fn print_report(report: &RegressionReport) {
         report.deltas.transaction_size_bytes,
     );
 
-    println!();
+    tracing::info!(" ");
 
     if report.regression_flags.is_empty() {
-        println!("  ✓ No regressions detected.");
+        tracing::info!("  ✓ No regressions detected.");
     } else {
-        println!(
+        tracing::info!(
             "  ⚠ {} REGRESSION(S) DETECTED:\n",
             report.regression_flags.len()
         );
         for flag in &report.regression_flags {
-            println!(
+            tracing::info!(
                 "    [{:>8}] {} — {:+.1}%",
                 flag.severity.to_uppercase(),
                 flag.resource,
@@ -286,8 +412,8 @@ pub fn print_report(report: &RegressionReport) {
         }
     }
 
-    println!("\n  Summary: {}", report.summary);
-    println!("{}\n", "=".repeat(60));
+    tracing::info!("\n  Summary: {}", report.summary);
+    tracing::info!("{}\n", "=".repeat(60));
 }
 
 fn print_metric_row(label: &str, current: u64, base: u64, delta: f64) {
@@ -298,7 +424,7 @@ fn print_metric_row(label: &str, current: u64, base: u64, delta: f64) {
     } else {
         "="
     };
-    println!(
+    tracing::info!(
         "  {:<25} {:>12} {:>12} {:>+8.1}% {}",
         label, current, base, delta, arrow,
     );
@@ -498,5 +624,64 @@ mod tests {
         assert_eq!(report.regression_flags.len(), 1);
         assert_eq!(report.regression_flags[0].resource, "cpu_instructions");
         assert!(report.summary.contains("regression(s) detected"));
+    }
+
+    #[test]
+    fn test_validate_baseline_empty_is_insufficient() {
+        // An all-zero baseline means there is no historical data at all.
+        let empty = make_resources(0, 0, 0, 0, 0);
+        let err = validate_baseline(&empty).unwrap_err();
+        assert!(matches!(err, ComparisonError::InsufficientData(_)));
+    }
+
+    #[test]
+    fn test_validate_baseline_full_ok() {
+        let full = make_resources(1000, 2000, 300, 400, 500);
+        assert!(validate_baseline(&full).is_ok());
+    }
+
+    #[test]
+    fn test_validate_baseline_partial_ok() {
+        // Partial data (some metrics zero) is usable but should warn — it must
+        // not be treated as InsufficientData.
+        let partial = make_resources(1000, 0, 300, 0, 500);
+        assert!(validate_baseline(&partial).is_ok());
+    }
+
+    #[test]
+    fn test_select_baseline_empty_errors() {
+        let historical: Vec<SorobanResources> = vec![];
+        let err = select_baseline(&historical).unwrap_err();
+        assert!(matches!(err, ComparisonError::InsufficientData(_)));
+    }
+
+    #[test]
+    fn test_select_baseline_uses_oldest() {
+        // The oldest sample (first element) must be used as the baseline, even
+        // when newer samples differ.
+        let historical = vec![
+            make_resources(1000, 2000, 300, 400, 500), // oldest (baseline)
+            make_resources(1200, 2100, 320, 410, 520),
+        ];
+        let baseline = select_baseline(&historical).unwrap();
+        assert_eq!(baseline.cpu_instructions, 1000);
+        assert_eq!(baseline.ram_bytes, 2000);
+    }
+
+    #[test]
+    fn test_compare_against_history_success() {
+        let current = make_resources(1500, 2000, 300, 400, 500);
+        let historical = vec![make_resources(1000, 2000, 300, 400, 500)];
+        let report = compare_against_history(current, &historical).unwrap();
+        assert_eq!(report.regression_flags.len(), 1);
+        assert_eq!(report.regression_flags[0].resource, "cpu_instructions");
+    }
+
+    #[test]
+    fn test_compare_against_history_insufficient() {
+        let current = make_resources(1500, 2000, 300, 400, 500);
+        let historical: Vec<SorobanResources> = vec![];
+        let err = compare_against_history(current, &historical).unwrap_err();
+        assert!(matches!(err, ComparisonError::InsufficientData(_)));
     }
 }

@@ -2,6 +2,8 @@ use crate::admin::{has_administrator, read_administrator, write_administrator};
 use crate::allowance::{read_allowance, spend_allowance, write_allowance};
 use crate::balance::{read_balance, receive_balance, spend_balance};
 use crate::metadata::{read_decimal, read_name, read_symbol, write_metadata};
+use crate::storage_types::UriInfo;
+use crate::uri;
 use emergency_guard::{EmergencyGuard, GuardError, PauseType};
 use soroban_sdk::{contract, contractimpl, vec, Address, Env, String, Vec};
 
@@ -41,6 +43,11 @@ pub trait TokenTrait {
     fn decimals(e: Env) -> u32;
     fn name(e: Env) -> String;
     fn symbol(e: Env) -> String;
+    fn set_token_uri(e: Env, uri: String);
+    fn token_uri(e: Env) -> String;
+    fn token_uri_info(e: Env) -> UriInfo;
+    fn set_token_uri_ttl(e: Env, ttl: u32);
+    fn invalidate_token_uri(e: Env);
 }
 
 #[contract]
@@ -70,13 +77,10 @@ impl TokenTrait for Token {
 
     fn set_admin(e: Env, new_admin: Address) {
         let admin = read_administrator(&e);
-        admin.require_auth();
         e.storage().instance().extend_ttl(100, 100);
 
-        EmergencyGuard::add_admin(e.clone(), vec![&e, admin.clone()], new_admin.clone())
-            .expect("failed to add token admin");
-        EmergencyGuard::remove_admin(e.clone(), vec![&e, admin.clone()], admin)
-            .expect("failed to remove old token admin");
+        EmergencyGuard::rotate_admin(e.clone(), vec![&e, admin.clone()], admin, new_admin.clone())
+            .expect("failed to rotate token admin");
         write_administrator(&e, &new_admin);
     }
 
@@ -183,5 +187,39 @@ impl TokenTrait for Token {
 
     fn symbol(e: Env) -> String {
         read_symbol(&e)
+    }
+
+    fn set_token_uri(e: Env, uri: String) {
+        require_not_paused(&e, PauseType::METADATA);
+        let admin = read_administrator(&e);
+        admin.require_auth();
+        e.storage().instance().extend_ttl(100, 100);
+        uri::set_token_uri(&e, &uri);
+    }
+
+    fn token_uri(e: Env) -> String {
+        e.storage().instance().extend_ttl(100, 100);
+        uri::token_uri(&e)
+    }
+
+    fn token_uri_info(e: Env) -> UriInfo {
+        e.storage().instance().extend_ttl(100, 100);
+        uri::token_uri_info(&e)
+    }
+
+    fn set_token_uri_ttl(e: Env, ttl: u32) {
+        require_not_paused(&e, PauseType::METADATA);
+        let admin = read_administrator(&e);
+        admin.require_auth();
+        e.storage().instance().extend_ttl(100, 100);
+        uri::set_token_uri_ttl(&e, ttl);
+    }
+
+    fn invalidate_token_uri(e: Env) {
+        require_not_paused(&e, PauseType::METADATA);
+        let admin = read_administrator(&e);
+        admin.require_auth();
+        e.storage().instance().extend_ttl(100, 100);
+        uri::invalidate_token_uri(&e);
     }
 }

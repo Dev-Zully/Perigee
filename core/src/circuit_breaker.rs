@@ -111,4 +111,48 @@ mod tests {
         assert!(!cb.evaluate_nav_drop(f64::NAN, 100.0));
         assert!(!cb.evaluate_nav_drop(f64::INFINITY, 100.0));
     }
+
+    #[test]
+    fn test_half_open_to_closed_after_reset() {
+        let mut cb = CircuitBreaker::new(10.0);
+        cb.evaluate_nav_drop(100.0, 80.0);
+        assert!(cb.is_open());
+        cb.attempt_half_open();
+        assert_eq!(cb.state, BreakerState::HalfOpen);
+        cb.reset();
+        assert_eq!(cb.state, BreakerState::Closed);
+        assert!(!cb.is_open());
+        assert!(!cb.is_manual_review_required());
+    }
+
+    #[test]
+    fn test_cooldown_reset_clears_triggered_at() {
+        let mut cb = CircuitBreaker::new(5.0);
+        cb.evaluate_nav_drop(100.0, 50.0);
+        assert!(cb.is_open());
+        assert!(cb.triggered_at.is_some());
+        cb.reset();
+        assert!(cb.triggered_at.is_none());
+    }
+
+    #[test]
+    fn test_consecutive_trips_stay_open() {
+        let mut cb = CircuitBreaker::new(10.0);
+        cb.evaluate_nav_drop(100.0, 85.0);
+        assert!(cb.is_open());
+        cb.attempt_half_open();
+        assert_eq!(cb.state, BreakerState::HalfOpen);
+        cb.evaluate_nav_drop(100.0, 80.0);
+        assert!(cb.is_open());
+    }
+
+    #[test]
+    fn test_half_open_rejects_on_failure() {
+        let mut cb = CircuitBreaker::new(10.0);
+        cb.evaluate_nav_drop(100.0, 80.0);
+        cb.attempt_half_open();
+        assert_eq!(cb.state, BreakerState::HalfOpen);
+        cb.evaluate_nav_drop(100.0, 75.0);
+        assert!(cb.is_open());
+    }
 }

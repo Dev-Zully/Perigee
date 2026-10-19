@@ -1,5 +1,7 @@
 import React from 'react';
 import { reportError, type ErrorBoundaryVariant, type ReportingContext } from '../lib/error-reporting';
+import { logger } from '../lib/logger';
+import { trackTelemetryError } from '../lib/telemetry';
 
 type ErrorBoundaryProps = {
   children?: React.ReactNode;
@@ -53,6 +55,8 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     if (this.state.error && prevProps.resetKeys !== this.props.resetKeys) {
       this.reset();
     }
+    logger.error('Unhandled UI error:', error, errorInfo);
+    trackTelemetryError(error, { component: 'ErrorBoundary' });
   }
 
   reset = () => {

@@ -210,7 +210,7 @@ fn test_add_admin_fails_with_non_admin_approvers() {
     let outsider = Address::generate(&env);
     let approvers = vec![&env, outsider];
     let result = client.try_add_admin(&approvers, &new_admin);
-    assert_eq!(result, Err(Ok(GuardError::InsufficientSignatures)));
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn test_unauthorized_admin_removal() {
     let outsider = Address::generate(&env);
     let approvers = vec![&env, outsider];
     let result = client.try_remove_admin(&approvers, &admins[1]);
-    assert_eq!(result, Err(Ok(GuardError::InsufficientSignatures)));
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 // â”€â”€â”€ Full rotation cycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -358,7 +358,7 @@ fn test_removed_admin_cannot_approve_operations() {
     let new_admin = Address::generate(&env);
     let bad_approvers = vec![&env, admins[2].clone()];
     let result = client.try_add_admin(&bad_approvers, &new_admin);
-    assert_eq!(result, Err(Ok(GuardError::InsufficientSignatures)));
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
 }
 
 #[test]
@@ -491,4 +491,50 @@ fn test_pause_type_as_u32_bitmask() {
         pause.as_u32(),
         crate::PauseType::SWAP | crate::PauseType::DEPOSIT
     );
+}
+
+// ── Contract delegation onto the shared guard core ───────────────────────────
+// These pin the multi-signature threshold edge cases named in CONTRACT-5's
+// scope through the public EmergencyGuard entry points, which now delegate to
+// the reusable `Perigee-guards` core.
+
+#[test]
+fn test_validate_multi_sig_threshold_edge_cases() {
+    let (env, client, admins) = setup(2, 3);
+
+    // Exactly threshold distinct signs.
+    let ok = vec![&env, admins[0].clone(), admins[1].clone()];
+    assert_eq!(client.validate_multi_sig(&ok), Ok(()));
+
+    // One below threshold.
+    let below = vec![&env, admins[0].clone()];
+    assert_eq!(
+        client.try_validate_multi_sig(&below),
+        Err(Ok(GuardError::InsufficientSignatures))
+    );
+
+    // Duplicate signer addresses must not count as two approvals.
+    let dup = vec![&env, admins[0].clone(), admins[0].clone()];
+    assert_eq!(
+        client.try_validate_multi_sig(&dup),
+        Err(Ok(GuardError::InsufficientSignatures))
+    );
+
+    // A non-admin signer is rejected.
+    let not_admin = Address::generate(&env);
+    let outsider = vec![&env, not_admin];
+    assert_eq!(
+        client.try_validate_multi_sig(&outsider),
+        Err(Ok(GuardError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_emergency_pause_rejects_non_admin_approver() {
+    let (env, client, admins) = setup(2, 3);
+    let outsider = Address::generate(&env);
+    let approvers = vec![&env, admins[0].clone(), outsider];
+    let result = client.try_emergency_pause(&approvers);
+    assert_eq!(result, Err(Ok(GuardError::Unauthorized)));
+    assert!(!client.is_paused(&PauseType::SWAP));
 }

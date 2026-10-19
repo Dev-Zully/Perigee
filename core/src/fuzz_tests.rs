@@ -10,6 +10,11 @@ mod tests {
     use crate::simulation::{SorobanResources, TtlEntryReport};
     use proptest::prelude::*;
 
+    /// Number of proptest cases: 5 000 with the `fuzz` feature, 1 000 otherwise.
+    fn fuzz_cases() -> u32 {
+        if cfg!(feature = "fuzz") { 5_000 } else { 1_000 }
+    }
+
     // ── Strategies ──────────────────────────────────────────────────────────
 
     /// Generate a random `SorobanResources` struct with arbitrary u64 fields.
@@ -87,7 +92,7 @@ mod tests {
     // ── Fuzz tests ──────────────────────────────────────────────────────────
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(1000))]
+        #![proptest_config(ProptestConfig::with_cases(fuzz_cases()))]
 
         // ─── calculate_cost (SimulationEngine method) ───────────────────
 

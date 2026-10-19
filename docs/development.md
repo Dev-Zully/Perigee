@@ -46,3 +46,8 @@ This guide covers setting up your environment and the development standards we f
 
 - Use **Soroban SDK v22.0.0** or higher.
 - Avoid deprecated methods like `register_contract` (use `register` instead).
+
+### Test Coverage
+
+- Contract coverage is generated with `cargo-tarpaulin` and gated in CI at **80% line coverage**.
+- Run it locally with `bash scripts/coverage.sh`; see [COVERAGE.md](./COVERAGE.md) for thresholds, reports and configuration.

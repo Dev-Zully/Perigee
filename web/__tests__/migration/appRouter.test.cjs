@@ -10,6 +10,7 @@
 
 const { readFileSync, existsSync } = require('fs');
 const { join } = require('path');
+const { describe, it } = require('node:test');
 const packageJson = require('../../package.json');
 
 describe('App Router Migration Safeguards', () => {

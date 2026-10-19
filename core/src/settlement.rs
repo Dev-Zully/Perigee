@@ -74,3 +74,57 @@ impl SettlementGuard {
         self.pending.iter().filter(|r| !r.is_settled).count()
     }
 }
+
+pub enum SettlementError {
+    Transient(String),
+    Permanent(String),
+}
+
+pub struct SettlementSubmitter {
+    max_retries: u32,
+    initial_backoff_ms: u64,
+}
+
+impl SettlementSubmitter {
+    pub fn new(max_retries: u32, initial_backoff_ms: u64) -> Self {
+        Self {
+            max_retries,
+            initial_backoff_ms,
+        }
+    }
+
+    pub fn compute_backoff(&self, attempt: u32) -> u64 {
+        self.initial_backoff_ms * 2u64.pow(attempt)
+    }
+
+    pub fn should_retry(&self, attempt: u32, error: &SettlementError) -> bool {
+        attempt < self.max_retries && matches!(error, SettlementError::Transient(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settlement_retry_backoff() {
+        let sub = SettlementSubmitter::new(3, 1000);
+        assert_eq!(sub.compute_backoff(0), 1000);
+        assert_eq!(sub.compute_backoff(1), 2000);
+        assert_eq!(sub.compute_backoff(2), 4000);
+    }
+
+    #[test]
+    fn test_should_retry_transient() {
+        let sub = SettlementSubmitter::new(3, 1000);
+        assert!(sub.should_retry(0, &SettlementError::Transient("timeout".into())));
+        assert!(sub.should_retry(2, &SettlementError::Transient("timeout".into())));
+        assert!(!sub.should_retry(3, &SettlementError::Transient("timeout".into())));
+    }
+
+    #[test]
+    fn test_should_not_retry_permanent() {
+        let sub = SettlementSubmitter::new(3, 1000);
+        assert!(!sub.should_retry(0, &SettlementError::Permanent("bad_seq".into())));
+    }
+}

@@ -1,7 +1,8 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde_json::Value;
 use soroban_sdk::xdr::{
-    Hash, Limits, ScAddress, ScMap, ScMapEntry, ScString, ScSymbol, ScVal, ScVec, StringM, Uint256,
-    VecM, WriteXdr,
+    Hash, Limits, ReadXdr, ScAddress, ScMap, ScMapEntry, ScString, ScSymbol, ScVal, ScVec, StringM,
+    TransactionEnvelope, Uint256, VecM, WriteXdr,
 };
 use stellar_strkey::Strkey;
 use thiserror::Error;
@@ -21,6 +22,9 @@ pub enum ParserError {
 
     #[error("Invalid hex bytes at {location}: {details}")]
     InvalidHex { location: String, details: String },
+
+    #[error("Invalid XDR at {location}: {details}")]
+    InvalidXdr { location: String, details: String },
 }
 
 pub struct ArgParser;
@@ -86,6 +90,11 @@ impl ArgParser {
                     })?));
                 }
 
+                // XDR ScVal detection (prefixed with xdr:)
+                if let Some(xdr_str) = s.strip_prefix("xdr:") {
+                    return Self::parse_sc_val_xdr_at(xdr_str, path);
+                }
+
                 // Default: Treat as String
                 let string_m: StringM =
                     s.as_bytes()
@@ -140,6 +149,42 @@ impl ArgParser {
                 Ok(ScVal::Map(Some(ScMap(map_m))))
             }
         }
+    }
+
+    /// Parse a base64-encoded Stellar transaction XDR string into a TransactionEnvelope.
+    /// Returns a `Result` and maps decoding failures to `ParserError::InvalidXdr`.
+    pub fn parse_transaction_xdr(xdr_b64: &str) -> Result<TransactionEnvelope, ParserError> {
+        let bytes = BASE64
+            .decode(xdr_b64.trim())
+            .map_err(|e| ParserError::InvalidXdr {
+                location: "$".to_string(),
+                details: format!("Invalid base64 encoding: {}", e),
+            })?;
+
+        TransactionEnvelope::from_xdr(&bytes, Limits::none()).map_err(|e| ParserError::InvalidXdr {
+            location: "$".to_string(),
+            details: format!("XDR decode error: {}", e),
+        })
+    }
+
+    /// Parse a base64-encoded ScVal XDR string into an ScVal.
+    /// Returns a `Result` and maps decoding failures to `ParserError::InvalidXdr`.
+    pub fn parse_sc_val_xdr(xdr_b64: &str) -> Result<ScVal, ParserError> {
+        Self::parse_sc_val_xdr_at(xdr_b64, "$")
+    }
+
+    fn parse_sc_val_xdr_at(xdr_b64: &str, path: &str) -> Result<ScVal, ParserError> {
+        let bytes = BASE64
+            .decode(xdr_b64.trim())
+            .map_err(|e| ParserError::InvalidXdr {
+                location: path.to_string(),
+                details: format!("Invalid base64 encoding: {}", e),
+            })?;
+
+        ScVal::from_xdr(&bytes, Limits::none()).map_err(|e| ParserError::InvalidXdr {
+            location: path.to_string(),
+            details: format!("XDR decode error: {}", e),
+        })
     }
 
     fn parse_address(address: &str) -> Result<ScAddress, String> {
@@ -241,5 +286,48 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("$.a.b[1]"));
         assert!(err.contains("expected integer, found number 1.5"));
+    }
+
+    #[test]
+    fn test_parse_transaction_xdr_malformed_base64() {
+        let malformed_base64 = "!!!NotValidBase64!!!";
+        let result = ArgParser::parse_transaction_xdr(malformed_base64);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ParserError::InvalidXdr { .. }));
+        assert!(err.to_string().contains("Invalid base64 encoding"));
+    }
+
+    #[test]
+    fn test_parse_transaction_xdr_malformed_xdr_bytes() {
+        // Valid base64, but invalid XDR payload
+        let invalid_xdr_b64 = BASE64.encode(b"invalid xdr payload bytes");
+        let result = ArgParser::parse_transaction_xdr(&invalid_xdr_b64);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ParserError::InvalidXdr { .. }));
+        assert!(err.to_string().contains("XDR decode error"));
+    }
+
+    #[test]
+    fn test_parse_sc_val_xdr_valid_and_malformed() {
+        let val = ScVal::I64(42);
+        let xdr_bytes = val.to_xdr(Limits::none()).unwrap();
+        let b64 = BASE64.encode(&xdr_bytes);
+
+        // Valid decoding
+        let parsed = ArgParser::parse_sc_val_xdr(&b64).unwrap();
+        assert!(matches!(parsed, ScVal::I64(42)));
+
+        // Prefixed string decoding
+        let json = format!("\"xdr:{}\"", b64);
+        let parsed_json = ArgParser::parse(&json).unwrap();
+        assert!(matches!(parsed_json, ScVal::I64(42)));
+
+        // Malformed XDR decoding returns Result::Err instead of panicking
+        let malformed_xdr = BASE64.encode(b"not an scval");
+        let err_result = ArgParser::parse_sc_val_xdr(&malformed_xdr);
+        assert!(err_result.is_err());
+        assert!(matches!(err_result.unwrap_err(), ParserError::InvalidXdr { .. }));
     }
 }

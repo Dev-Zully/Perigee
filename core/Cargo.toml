@@ -3,6 +3,9 @@ name = "Perigee-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+fuzz = []
+
 [lib]
 name = "Perigee_core"
 path = "src/lib.rs"
@@ -21,7 +24,14 @@ rusqlite = { version = "0.29", features = ["bundled"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
+# BE-026: HMAC-SHA256 for the audit hash chain. Same RustCrypto family as
+# sha2 above; hand-rolling HMAC is not worth the risk.
+hmac = "0.12"
 argon2 = "0.5"
+# BE-043 (#280): constant-time comparisons for secret hash verification to
+# close a timing side channel. `subtle` is already pulled in transitively by
+# `argon2`/`password-hash`, so this just makes it a direct dependency.
+subtle = "2.6.1"
 thiserror = "1.0"
 dotenvy = "0.15"
 config = "0.14"
@@ -52,5 +62,10 @@ wasm-encoder = { version = "0.240", features = ["wasmparser"] }
 wasmparser = "0.240"
 rayon = "1.8"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 proptest = "1.4.0"
+# `ServiceExt::oneshot` in main.rs's router tests lives behind this feature.
+tower = { version = "0.4", features = ["util"] }

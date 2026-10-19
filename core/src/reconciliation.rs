@@ -1,14 +1,37 @@
 #![allow(dead_code)]
 
+//! Fee reconciliation engine.
+//!
+//! **Precision model:** Fee percentages (`delta_pct`, `mean_delta_pct`, etc.)
+//! are stored as `f64` for API compatibility. Internal calculations use
+//! integer arithmetic where possible (`i64` for fee amounts in stroops).
+//! When converting between integer stroop amounts and percentage values,
+//! rounding is performed to 4 decimal places to avoid floating-point drift
+//! in reconciliation summaries.
+//!
+//! Known limitation: `Discrepancy::delta_pct` uses `f64`, which may lose
+//! precision for very small fee differences. For high-precision use cases,
+//! consider migrating to fixed-point arithmetic (e.g. `i128` with 18 decimal
+//! places) in a future iteration.
+
+use crate::auth::AuthenticatedUser;
 use crate::db;
+use crate::error_codes::ErrorCode;
+use crate::input_sanitization::{SanitizedJson, SanitizedPath, SanitizedQuery};
+use crate::runner::RequestCancellation;
+use std::str::FromStr;
+use crate::fee::analytics::FeeAnalyticsEngine;
+use crate::fee::persistence::FeeStore;
+use tokio_util::sync::CancellationToken;
 use crate::fee_analytics::FeeAnalyticsEngine;
 use crate::fee_store::FeeStore;
-use crate::jobs::{JobId, JobQueue};
+use crate::errors::ApiJson;
 use crate::AppError;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
+    extract::State,
     http::StatusCode,
-    Json,
+    Extension, Json,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -27,75 +50,15 @@ pub enum DiscrepancySeverity {
     Critical,
 }
 
-/// A single fee discrepancy between predicted and actual
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
-pub struct Discrepancy {
-    pub id: String,
-    pub report_id: String,
-    pub ledger_sequence: i64,
-    pub expected_fee: i64,
-    pub actual_fee: i64,
-    pub delta: i64,
-    pub delta_pct: f64,
-    pub severity: String,
-}
-
-/// Summary statistics for a reconciliation report
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ReconciliationSummary {
-    pub mean_delta_pct: f64,
-    pub median_delta_pct: f64,
-    pub std_dev_delta_pct: f64,
-    pub ledgers_with_critical: i64,
-    pub ledgers_with_warning: i64,
-}
-
-/// A completed reconciliation report
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ReconciliationReport {
-    pub id: String,
-    pub from_ledger: i64,
-    pub to_ledger: i64,
-    pub tolerance_pct: f64,
-    pub total_ledgers: i32,
-    pub discrepancies_count: i32,
-    pub avg_delta_pct: f64,
-    pub max_delta_pct: f64,
-    pub summary: Option<ReconciliationSummary>,
-    pub created_at: String,
-}
-
-/// Request to start a reconciliation job
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ReconcileRequest {
-    pub from_ledger: i64,
-    pub to_ledger: i64,
-    #[serde(default = "default_tolerance")]
-    pub tolerance_pct: f64,
-}
-
-fn default_tolerance() -> f64 {
-    5.0
-}
-
-/// Response from submitting a reconciliation job
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ReconcileResponse {
-    pub job_id: String,
-    pub status: String,
-    pub message: String,
-}
-
-/// Query params for listing reconciliation reports
-#[derive(Debug, Deserialize)]
-pub struct ListReportsQuery {
-    #[serde(default = "default_limit")]
-    pub limit: i64,
-}
-
-fn default_limit() -> i64 {
-    10
-}
+/// The reconciliation DTOs live in [`crate::db::models`]; the typed DB layer
+/// returns them directly. They were duplicated here field-for-field, which is
+/// what made `FeeReconciler` build one `ReconciliationReport` while the repo
+/// expected the other. `DiscrepancySeverity` above stays local — the DB layer
+/// stores severity as a plain string and has no equivalent enum.
+pub use crate::db::models::{
+    Discrepancy, ListReportsQuery, ReconcileRequest, ReconcileResponse, ReconciliationReport,
+    ReconciliationSummary,
+};
 
 /// Fee reconciliation engine that compares predictions against actuals
 pub struct FeeReconciler {
@@ -121,16 +84,45 @@ impl FeeReconciler {
         tolerance_pct: f64,
         progress_callback: Option<Box<dyn Fn(i32, &str) + Send + Sync>>,
     ) -> Result<ReconciliationReport, ReconciliationError> {
+        if from_ledger > to_ledger {
+            return Err(ReconciliationError::InvalidRange(
+                "from_ledger must not exceed to_ledger".to_string(),
+            ));
+        }
+
+        let cancellation = CancellationToken::new();
+        let _guard = cancellation.clone().drop_guard();
+        self.run_with_cancellation(
+            from_ledger,
+            to_ledger,
+            tolerance_pct,
+            progress_callback,
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn run_with_cancellation(
+        &self,
+        from_ledger: i64,
+        to_ledger: i64,
+        tolerance_pct: f64,
+        progress_callback: Option<Box<dyn Fn(i32, &str) + Send + Sync>>,
+        cancellation: CancellationToken,
+    ) -> Result<ReconciliationReport, ReconciliationError> {
+        if cancellation.is_cancelled() {
+            return Err(ReconciliationError::Cancelled);
+        }
         let report_id = uuid::Uuid::new_v4().to_string();
         let mut discrepancies: Vec<Discrepancy> = Vec::new();
         let total_ledgers = to_ledger - from_ledger + 1;
 
         // Get all samples in the range for actuals
-        let actual_samples = self
-            .store
-            .get_samples_in_range(from_ledger, to_ledger)
-            .await
-            .map_err(|e| ReconciliationError::StoreError(e.to_string()))?;
+        let actual_samples = tokio::select! {
+            _ = cancellation.cancelled() => return Err(ReconciliationError::Cancelled),
+            result = self.store.get_samples_in_range(from_ledger, to_ledger) => result
+                .map_err(|e| ReconciliationError::StoreError(e.to_string()))?,
+        };
 
         // Index actual samples by ledger sequence for fast lookup
         let actuals: std::collections::HashMap<i64, i64> = actual_samples
@@ -143,14 +135,19 @@ impl FeeReconciler {
         let mut max_delta_pct: f64 = 0.0;
 
         for ledger_seq in from_ledger..=to_ledger {
+            if cancellation.is_cancelled() {
+                return Err(ReconciliationError::Cancelled);
+            }
             checked += 1;
 
             // Get historical data up to (but not including) this ledger for prediction
-            let historical = self
-                .store
-                .get_samples_in_range(ledger_seq - 100, ledger_seq - 1)
-                .await
-                .map_err(|e| ReconciliationError::StoreError(e.to_string()))?;
+            let historical = tokio::select! {
+                _ = cancellation.cancelled() => return Err(ReconciliationError::Cancelled),
+                result = self
+                    .store
+                    .get_samples_in_range(ledger_seq - 100, ledger_seq - 1) => result
+                    .map_err(|e| ReconciliationError::StoreError(e.to_string()))?,
+            };
 
             if historical.is_empty() {
                 continue;
@@ -228,7 +225,7 @@ impl FeeReconciler {
             0.0
         } else {
             let mid = sorted_deltas.len() / 2;
-            if sorted_deltas.len() % 2 == 0 {
+            if sorted_deltas.len().is_multiple_of(2) {
                 (sorted_deltas[mid - 1] + sorted_deltas[mid]) / 2.0
             } else {
                 sorted_deltas[mid]
@@ -254,7 +251,9 @@ impl FeeReconciler {
             .count() as i64;
 
         let summary = ReconciliationSummary {
-            mean_delta_pct,
+            // The local binding is `avg_delta_pct`; the DTO field is
+            // `mean_delta_pct`. Same statistic, different name.
+            mean_delta_pct: avg_delta_pct,
             median_delta_pct,
             std_dev_delta_pct,
             ledgers_with_critical,
@@ -271,12 +270,18 @@ impl FeeReconciler {
             avg_delta_pct,
             max_delta_pct,
             summary: Some(summary),
-            created_at: Utc::now().to_rfc3339(),
+            created_at: Utc::now(),
         };
 
         // Persist report and discrepancies
-        self.persist_report(&report, &discrepancies).await?;
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err(ReconciliationError::Cancelled),
+            result = self.persist_report(&report, &discrepancies) => result?,
+        }
 
+        if cancellation.is_cancelled() {
+            return Err(ReconciliationError::Cancelled);
+        }
         if let Some(ref cb) = progress_callback {
             cb(100, "Reconciliation complete");
         }
@@ -309,21 +314,41 @@ pub enum ReconciliationError {
 
     #[error("No data available for the requested ledger range")]
     NoData,
+
+    #[error("Reconciliation cancelled")]
+    Cancelled,
 }
 
 impl From<ReconciliationError> for AppError {
     fn from(err: ReconciliationError) -> Self {
         match err {
-            ReconciliationError::InvalidRange(msg) => AppError::BadRequest(msg),
-            ReconciliationError::NoData => {
-                AppError::BadRequest("No data available for the requested ledger range".into())
+            ReconciliationError::InvalidRange(msg) => {
+                AppError::with_code(ErrorCode::InvalidInput, msg)
             }
+            ReconciliationError::NoData => AppError::with_code(
+                ErrorCode::InvalidInput,
+                "No data available for the requested ledger range",
+            ),
+            ReconciliationError::StoreError(msg) => {
+                AppError::with_code(ErrorCode::DatabaseError, msg)
+            }
+            ReconciliationError::Cancelled => AppError::Internal("Reconciliation cancelled".into()),
             ReconciliationError::StoreError(msg) => AppError::Internal(msg),
         }
     }
 }
 
 // ── HTTP Handlers ────────────────────────────────────────────────────────────
+
+fn require_operator(user: &AuthenticatedUser) -> Result<(), AppError> {
+    if user.has_role(crate::auth::Role::Operator) {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "Operator access is required".to_string(),
+        ))
+    }
+}
 
 /// Submit an async reconciliation job
 #[utoipa::path(
@@ -339,17 +364,24 @@ impl From<ReconciliationError> for AppError {
 )]
 pub async fn reconcile_handler(
     State(state): State<Arc<crate::AppState>>,
+    Extension(user): Extension<AuthenticatedUser>,
+    ApiJson(req): ApiJson<ReconcileRequest>,
+    SanitizedJson(req): SanitizedJson<ReconcileRequest>,
+    Extension(cancellation): Extension<RequestCancellation>,
     Json(req): Json<ReconcileRequest>,
 ) -> Result<(StatusCode, Json<ReconcileResponse>), AppError> {
+    require_operator(&user)?;
     if req.from_ledger >= req.to_ledger {
-        return Err(AppError::BadRequest(
-            "from_ledger must be less than to_ledger".into(),
+        return Err(AppError::with_code(
+            ErrorCode::InvalidInput,
+            "from_ledger must be less than to_ledger",
         ));
     }
 
     if req.tolerance_pct <= 0.0 || req.tolerance_pct > 100.0 {
-        return Err(AppError::BadRequest(
-            "tolerance_pct must be between 0 and 100".into(),
+        return Err(AppError::with_code(
+            ErrorCode::InvalidInput,
+            "tolerance_pct must be between 0 and 100",
         ));
     }
 
@@ -359,10 +391,17 @@ pub async fn reconcile_handler(
         tolerance_pct: req.tolerance_pct,
     };
 
-    let job_id = state
-        .job_queue
-        .submit(crate::jobs::JobType::Reconcile, payload, None)
+    let job_id = cancellation
+        .wait(
+            state
+                .job_queue
+                .submit(crate::jobs::JobType::Reconcile, payload, None),
+        )
         .await
+        .map_err(|error| {
+            AppError::with_code(ErrorCode::ReconciliationFailed, error.to_string())
+        })?;
+        .map_err(|_| AppError::Internal("Request cancelled".into()))?
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     Ok((
@@ -390,15 +429,31 @@ pub async fn reconcile_handler(
 )]
 pub async fn get_reconcile_job_handler(
     State(state): State<Arc<crate::AppState>>,
+    Extension(user): Extension<AuthenticatedUser>,
     Path(job_id): Path<String>,
 ) -> Result<Json<crate::jobs::Job>, AppError> {
+    require_operator(&user)?;
     let id = crate::jobs::JobId::from_str(&job_id)
         .map_err(|_| AppError::BadRequest("Invalid job ID".into()))?;
+    SanitizedPath(job_id): SanitizedPath<String>,
+    Extension(cancellation): Extension<RequestCancellation>,
+    Path(job_id): Path<String>,
+) -> Result<Json<crate::jobs::Job>, AppError> {
+    let id = crate::jobs::JobId::from_str(&job_id).map_err(|_| {
+        AppError::with_code(ErrorCode::InvalidInput, "Invalid job ID")
+    })?;
 
-    let job = state
-        .job_queue
-        .get(&id)
+    let job = cancellation
+        .wait(state.job_queue.get(&id))
         .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| {
+            AppError::with_code(
+                ErrorCode::ReconciliationNotFound,
+                format!("Reconciliation job {} not found", job_id),
+            )
+        })?;
+        .map_err(|_| AppError::Internal("Request cancelled".into()))?
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or_else(|| AppError::NotFound(format!("Job {} not found", job_id)))?;
 
@@ -419,8 +474,22 @@ pub async fn get_reconcile_job_handler(
 )]
 pub async fn list_reports_handler(
     State(state): State<Arc<crate::AppState>>,
+    Extension(user): Extension<AuthenticatedUser>,
     Query(params): Query<ListReportsQuery>,
 ) -> Result<Json<Vec<ReconciliationReport>>, AppError> {
-    let reports = state.reconciliation_repo.list(params.limit).await?;
+    require_operator(&user)?;
+    let reports = state
+        .reconciliation_repo
+        .list(params.limit)
+    SanitizedQuery(params): SanitizedQuery<ListReportsQuery>,
+    Extension(cancellation): Extension<RequestCancellation>,
+    Query(params): Query<ListReportsQuery>,
+) -> Result<Json<Vec<ReconciliationReport>>, AppError> {
+    let reports = cancellation
+        .wait(state.reconciliation_repo.list(params.limit))
+        .await
+        .map_err(|error| AppError::with_code(ErrorCode::DatabaseError, error.to_string()))?;
+        .map_err(|_| AppError::Internal("Request cancelled".into()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(reports))
 }
