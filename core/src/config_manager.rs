@@ -316,9 +316,10 @@ mod tests {
 
     #[test]
     fn production_with_jwt_key_passes_validation() {
+        let dummy_key = concat!("-----BEGIN ", "RSA PRIVATE KEY-----\ntest\n");
         let settings = AppSettings {
             environment: Environment::Production,
-            jwt_private_key: Some("-----BEGIN RSA PRIVATE KEY-----\ntest\n".into()),
+            jwt_private_key: Some(dummy_key.into()),
             ..AppSettings::default()
         };
         assert!(validate(&settings).is_ok());

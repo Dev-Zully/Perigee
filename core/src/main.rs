@@ -2990,7 +2990,7 @@ async fn main() {
             .await
             .unwrap_or_else(|error| panic!("Failed to initialize database: {error}"));
         println!("Database migrations applied successfully.");
-        tracing::info!(database_url = %config.database_url, "Running database migrations");
+        tracing::info!("Running database migrations");
         let pool_config = build_database_pool_config(&config);
         db::init_pool_with_config(&config.database_url, &pool_config)
             .await
@@ -3168,7 +3168,7 @@ async fn main() {
     );
     let database_url = &config.database_url;
     let database_pool_config = build_database_pool_config(&config);
-    tracing::info!(database_url = %database_url, "Initializing database");
+    tracing::info!("Initializing database");
 
     let db_pool = db::init_pool_with_config(database_url, &database_pool_config)
         .await
