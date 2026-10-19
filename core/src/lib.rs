@@ -76,6 +76,10 @@ pub mod secure_ids;
 pub mod audit_log;
 pub mod metrics;
 pub mod input_sanitization;
+pub mod idempotency;
+pub mod pagination;
+pub mod validation_pipeline;
+pub mod notifications;
 pub mod db;
 
 #[cfg(test)]
