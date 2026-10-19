@@ -22,6 +22,8 @@ members = [
     "contracts/vault_factory",
     # Pluggable yield strategies, rotation, performance fees (#633).
     "contracts/vault_strategy",
+    # Lending strategy with health-factor guarded market operations.
+    "contracts/lending_strategy",
     # Circuit breaker, partial pause, timelocked unpause (#634).
     "contracts/vault_guard",
     # ERC-4626 tokenised vault (#631).
