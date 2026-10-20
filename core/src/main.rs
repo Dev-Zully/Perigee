@@ -2978,35 +2978,21 @@ async fn main() {
 
     // ── CLI: migrate subcommand ──────────────────────────────────────────
     if args.len() > 1 && args[1] == "migrate" {
-        tracing::info!("Running database migrations");
-        let pool_config = db::PoolConfig::new(
-            config.database_max_connections,
-            config.database_min_connections,
-            std::time::Duration::from_secs(config.database_acquire_timeout_secs),
-        )
-        .map_err(|error| error.to_string())
-        .unwrap_or_else(|error| panic!("Invalid database pool configuration: {error}"));
-        db::init_pool_with_config(&config.database_url, pool_config)
-            .await
-            .unwrap_or_else(|error| panic!("Failed to initialize database: {error}"));
-        println!("Database migrations applied successfully.");
-        tracing::info!("Running database migrations");
-        let pool_config = build_database_pool_config(&config);
-        db::init_pool_with_config(&config.database_url, &pool_config)
-            .await
-            .expect("Failed to connect to database and run migrations");
-        println!("Database migrations applied successfully.");
-        tracing::info!(
-            database_configured = !config.database_url.trim().is_empty(),
-            "Running database migrations"
-        );
         let db_pool = sqlx::SqlitePool::connect(&config.database_url)
             .await
             .expect("Failed to connect to database");
-        crate::db::migrations::run_migrations(&db_pool)
-            .await
-            .expect("Failed to run database migrations");
-        tracing::info!("Database migrations applied successfully.");
+        if args.get(2).map(String::as_str) == Some("rollback") {
+            let version = crate::db::MigrationRunner::new()
+                .rollback_one(&db_pool)
+                .await
+                .expect("Failed to roll back database migration");
+            println!("Rolled back migration: {version:?}");
+        } else {
+            crate::db::migrations::run_migrations(&db_pool)
+                .await
+                .expect("Failed to run database migrations");
+            println!("Database migrations applied successfully.");
+        }
         return;
     }
 
