@@ -12,6 +12,37 @@ As a project in the **Stellar Wave Program**, we value collaboration and clear c
 
 ## 🧭 Runtime conventions
 
+### Database schema migrations
+
+The SQLite schema is managed by `core/migrations` and the embedded SQLx runner
+in `core/src/db/migrations.rs`. Submit exactly one migration per pull request.
+Use the next numeric prefix and paired files, for example
+`011_add_example_column.sql` and `011_add_example_column.down.sql`. Once a
+migration has shipped, never edit its up or down file; add a new version.
+
+Each migration must include both directions. Keep the up migration safe to
+retry where the database supports it (`IF NOT EXISTS`, guarded updates), and
+run schema changes in a transaction. The runner applies the complete pending
+set atomically and records a checksum; changed applied files stop deployment.
+Rollback is one version at a time with `cargo run -p Perigee-core -- migrate
+rollback`. Applying migrations uses `cargo run -p Perigee-core -- migrate`.
+Both commands use `DATABASE_URL`. Review rollback effects before using it on
+production data: down migrations may remove data stored in newly added tables
+or columns.
+
+For production changes, use expand-contract: first add nullable columns,
+tables, or compatible indexes; deploy code that can read both representations;
+backfill large datasets in a resumable job with bounded batches; switch reads
+and writes; then remove old schema in a later pull request after old code is
+gone. Avoid long table rewrites and blocking index creation in request-serving
+deployments. Put operational backfills in jobs, not in a long-running DDL
+transaction.
+
+The migration CI check applies the full catalog to a fresh in-memory test
+database, reapplies it to verify idempotency, and rolls back/reapplies the
+latest migration. Add migration-specific assertions alongside this check when
+introducing data transformations.
+
 These are project-wide rules enforced by code review. New code must follow them.
 
 ### Timestamps are always UTC
