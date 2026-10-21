@@ -2504,6 +2504,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "perigee-cross-chain-governance"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "perigee-dex-lp-strategy"
 version = "0.1.0"
 dependencies = [
