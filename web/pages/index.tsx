@@ -10,6 +10,7 @@ import { FunctionSidebar } from "../components/FunctionSidebar";
 import { LiveAlert, LiveStatus } from "../components/LiveRegion";
 import { SEO } from "../components/SEO";
 import { UploadZone } from "../components/upload-zone";
+import { ResultViewerSkeleton } from "../components/ResultViewerSkeleton";
 
 /**
  * Lazy-load ResultViewer — it pulls in `mermaid` (~1.5 MB) which is only
@@ -17,16 +18,19 @@ import { UploadZone } from "../components/upload-zone";
  * keeps it out of the initial JS bundle.
  *
  * Resolves #686 — Optimize bundle size.
+ *
+ * The chunk-loading fallback below used to be a plain "Loading…" string
+ * (#685: spinner-less, non-content-aware, and causes layout shift once the
+ * real panel mounts). `ResultViewerSkeleton` already existed in the
+ * component library but was unused anywhere in the app — this is its first
+ * real usage, matching the exact dimensions of the panel it is standing in
+ * for.
  */
 const ResultViewer = dynamic(
   () => import("../components/Resultviewer").then((m) => ({ default: m.ResultViewer })),
   {
     ssr: false,
-    loading: () => (
-      <div className="flex h-32 items-center justify-center text-sm text-slate-500">
-        Loading result viewer…
-      </div>
-    ),
+    loading: () => <ResultViewerSkeleton />,
   },
 );
 import { analyzeService } from "../lib/api";
@@ -200,7 +204,29 @@ export default function Home() {
                 onSimulate={handleSimulate}
                 isLoading={loading}
               />
-              {currentResult && (
+              {/* WEB-16 (#470): announce analysis progress and outcomes. */}
+              <LiveStatus
+                message={analysisStatusMessage}
+                label={t("a11y.statusRegionLabel")}
+                data-testid="analysis-live-status"
+              />
+              <LiveAlert
+                message={
+                  currentResult && !currentResult.success
+                    ? (currentResult.error ?? t("a11y.analysisFailed"))
+                    : ""
+                }
+                data-testid="analysis-live-alert"
+              />
+              {/*
+               * #685: while a simulate/invoke is in flight, show the same
+               * content-aware skeleton used for the lazy chunk load above
+               * instead of leaving stale results on screen or nothing at
+               * all — the panel's final size is already known, so this also
+               * avoids layout shift once the real result replaces it.
+               */}
+              {loading && <ResultViewerSkeleton />}
+              {!loading && currentResult && (
                 <ErrorBoundary
                   variant="component"
                   context={{
@@ -218,34 +244,6 @@ export default function Home() {
                 </ErrorBoundary>
               )}
             </div>
-          <div className="flex flex-col gap-6">
-            <UploadZone onUpload={handleWasmUpload} />
-            <ContractInteraction
-              contractId={contractId}
-              onContractIdChange={setContractId}
-              selectedFunction={selectedFunction}
-              onSimulate={handleSimulate}
-              isLoading={loading}
-            />
-            {/* WEB-16 (#470): announce analysis progress and outcomes. */}
-            <LiveStatus
-              message={analysisStatusMessage}
-              label={t("a11y.statusRegionLabel")}
-              data-testid="analysis-live-status"
-            />
-            <LiveAlert
-              message={
-                currentResult && !currentResult.success
-                  ? (currentResult.error ?? t("a11y.analysisFailed"))
-                  : ""
-              }
-              data-testid="analysis-live-alert"
-            />
-            {currentResult && (
-              <ErrorBoundary>
-                <ResultViewer result={currentResult} />
-              </ErrorBoundary>
-            )}
           </div>
         </div>
       </main>

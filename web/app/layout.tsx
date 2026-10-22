@@ -1,17 +1,10 @@
 import type { Metadata } from 'next';
 import '../styles/globals.css';
-import type { ReactNode } from 'react';
 import { Inter } from 'next/font/google';
 import { NetworkStatusBanner } from '@/components/NetworkStatusBanner';
 import { API_URL } from '@/lib/api';
-import { ErrorBoundary } from '../components/ErrorBoundary';
-
-// TODO: Move these from pages/_app.tsx during migration
-// import { WalletProvider } from '@/context/WalletContext';
-// import '@/styles/globals.css';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { WalletProvider } from '@/context/WalletContext';
-import '@/styles/globals.css';
 // WEB-15 (#469): mirror the Pages Router `MotionProvider` so the App Router
 // routes also honour `prefers-reduced-motion` once migration completes.
 import { MotionProvider } from '../components/MotionProvider';
@@ -50,9 +43,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           title="The app encountered a critical error"
           description="The application crashed while rendering. You can retry or reload the page to recover."
         >
-          <NetworkStatusBanner apiUrl={API_URL} />
-          {children}
-        <ErrorBoundary>
           <MotionProvider>
             <WalletProvider>
               <AnnouncerProvider>

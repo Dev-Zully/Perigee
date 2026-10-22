@@ -31,9 +31,9 @@ export interface FocusTrapOptions {
   trapTab?: boolean;
 }
 
-export interface FocusTrap {
+export interface FocusTrap<T extends HTMLElement = HTMLElement> {
   /** Attach to the dialog element. */
-  ref: RefObject<HTMLElement>;
+  ref: RefObject<T | null>;
   /** Focus the first appropriate element now (e.g. after async content loads). */
   focusInitial: () => void;
 }
@@ -62,7 +62,7 @@ export interface FocusTrap {
  */
 export function useFocusTrap<T extends HTMLElement = HTMLElement>(
   options: FocusTrapOptions = {},
-): FocusTrap {
+): FocusTrap<T> {
   const {
     active = true,
     onEscape,
