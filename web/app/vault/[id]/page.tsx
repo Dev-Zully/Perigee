@@ -1,15 +1,30 @@
+import type { Metadata } from "next";
+import { buildVaultJsonLd, buildVaultMetadata, fetchVaultData } from "@/lib/vault-metadata";
+import { VaultDetailPageClient } from "@/components/vault/VaultDetailPageClient";
+
 interface VaultPageProps {
-  params: { id: string };
+  // Next.js 15+ App Router: route params are async (Promise-based).
+  params: Promise<{ id: string }>;
 }
 
-export default function VaultPage({ params }: VaultPageProps) {
+export async function generateMetadata({ params }: VaultPageProps): Promise<Metadata> {
+  const resolvedParams = await params;
+  const vault = await fetchVaultData(resolvedParams.id);
+  return buildVaultMetadata(vault, resolvedParams.id);
+}
+
+export default async function VaultPage({ params }: VaultPageProps) {
+  const resolvedParams = await params;
+  const vault = await fetchVaultData(resolvedParams.id);
+  const jsonLd = buildVaultJsonLd(vault, resolvedParams.id);
+
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold">Vault {params.id}</h1>
-      <p className="mt-2 text-gray-600 dark:text-gray-400">
-        Vault detail view for vault ID: {params.id}
-      </p>
-    </div>
+    <>
+      {/* Plain text child, not dangerouslySetInnerHTML: script tags are a raw-text
+          HTML element, so JSON.stringify's output renders as-is without escaping. */}
+      <script type="application/ld+json">{JSON.stringify(jsonLd)}</script>
+      <VaultDetailPageClient id={resolvedParams.id} />
+    </>
   );
 }
 

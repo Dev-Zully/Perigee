@@ -4,7 +4,7 @@ import { Vault } from "@/types/vault";
 
 import { useVirtualVaultList } from "@/hooks/useVirtualVaultList";
 
-import { VaultRow } from "./VaultRow";
+import { VaultRow } from "../VaultRow";
 
 interface VaultListProps {
   vaults: Vault[];
@@ -124,6 +124,7 @@ export function VaultList({
                 }}
                 role="listitem"
               >
+                {/* onVaultClick (#684) opens the vault detail modal/drawer. */}
                 <VaultRow vault={vault} onClick={onVaultClick} />
               </div>
             );

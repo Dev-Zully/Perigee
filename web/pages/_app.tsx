@@ -96,40 +96,6 @@ export default function App({ Component, pageProps }: AppProps) {
   const route = router.asPath || "/";
 
   return (
-    <NextIntlClientProvider
-      locale={router?.locale ?? "en"}
-      messages={pageProps.messages ?? {}}
-      timeZone="UTC"
-    >
-      <ErrorBoundary
-        variant="root"
-        context={{
-          route,
-          component: "AppShell",
-        }}
-        title="We hit an unexpected error"
-        description="The application encountered a critical rendering issue. You can retry without losing your session."
-      >
-        <WalletProvider>
-          {/* Network status and API availability (#109) */}
-          <NetworkStatusBanner apiUrl={API_URL} />
-          {/* Graceful RPC fallback — shown when the backend is unreachable (#115) */}
-          <RpcFallbackBanner apiUrl={API_URL} />
-          <ErrorBoundary
-            variant="route"
-            context={{
-              route,
-              component: Component.displayName ?? "RouteBoundary",
-            }}
-            title="This page failed to load"
-            description="This page hit an unexpected rendering error. Try again or reload to recover the page state."
-          >
-            <Component {...pageProps} />
-            <Analytics />
-          </ErrorBoundary>
-        </WalletProvider>
-      </ErrorBoundary>
-    </NextIntlClientProvider>
     <div className={inter.className}>
       <MotionProvider>
         <LocaleSync>
@@ -139,35 +105,54 @@ export default function App({ Component, pageProps }: AppProps) {
               messages={pageProps.messages ?? defaultMessages}
               timeZone="UTC"
             >
-              <WalletProvider>
-                <ToastProvider>
-                  <AnnouncerProvider>
-                    <SkipLink />
-                    {/* Network status and API availability (#109) */}
-                    <NetworkStatusBanner apiUrl={API_URL} />
+              <ErrorBoundary
+                variant="root"
+                context={{
+                  route,
+                  component: "AppShell",
+                }}
+                title="We hit an unexpected error"
+                description="The application encountered a critical rendering issue. You can retry without losing your session."
+              >
+                <WalletProvider>
+                  <ToastProvider>
+                    <AnnouncerProvider>
+                      <SkipLink />
+                      {/* Network status and API availability (#109) */}
+                      <NetworkStatusBanner apiUrl={API_URL} />
 
-                    {/*
-                     * Graceful RPC fallback — shown when the backend is unreachable (#115).
-                     * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
-                     * stale-data badges on individual views.
-                     */}
-                    <RpcFallbackBanner apiUrl={API_URL}>
-                      <ErrorBoundary>
-                        {/* tabIndex={-1} so the skip link can move focus here (#696). */}
-                        <main id="main-content" tabIndex={-1}>
-                          <Component {...pageProps} />
-                        </main>
-                        <CommandPaletteLauncher />
-                        <Analytics />
-                        <ServiceWorkerManager />
-                      </ErrorBoundary>
-                    </RpcFallbackBanner>
-                  </AnnouncerProvider>
-                </ToastProvider>
-              </WalletProvider>
+                      {/*
+                       * Graceful RPC fallback — shown when the backend is unreachable (#115).
+                       * Wraps ErrorBoundary so children can read `useRpcFallback()` to display
+                       * stale-data badges on individual views.
+                       */}
+                      <RpcFallbackBanner apiUrl={API_URL}>
+                        <ErrorBoundary
+                          variant="route"
+                          context={{
+                            route,
+                            component: Component.displayName ?? "RouteBoundary",
+                          }}
+                          title="This page failed to load"
+                          description="This page hit an unexpected rendering error. Try again or reload to recover the page state."
+                        >
+                          {/* tabIndex={-1} so the skip link can move focus here (#696). */}
+                          <main id="main-content" tabIndex={-1}>
+                            <Component {...pageProps} />
+                          </main>
+                          <CommandPaletteLauncher />
+                          <Analytics />
+                          <ServiceWorkerManager />
+                        </ErrorBoundary>
+                      </RpcFallbackBanner>
+                    </AnnouncerProvider>
+                  </ToastProvider>
+                </WalletProvider>
+              </ErrorBoundary>
             </NextIntlClientProvider>
           </FeatureFlagProvider>
-        </LocaleSync>      </MotionProvider>
+        </LocaleSync>
+      </MotionProvider>
     </div>
   );
 }
