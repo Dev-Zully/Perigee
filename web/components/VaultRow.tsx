@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from "react";
 import type { Vault } from "@/types/vault";
 import { PrefetchLink } from "./PrefetchLink";
 
@@ -6,17 +7,47 @@ export interface VaultRowProps {
   style?: React.CSSProperties;
   /** When set, the vault name links to this page and prefetches it on hover (#691). */
   href?: string;
+  /**
+   * When set, the whole row becomes an interactive trigger (e.g. opening the
+   * vault detail modal/drawer, #684). The row gets `role="button"` and
+   * keyboard support; clicking the `href` link (if present) does not also
+   * fire this, since the link's own click is stopped from bubbling.
+   */
+  onClick?: (vault: Vault) => void;
 }
 
-export function VaultRow({ vault, style, href }: VaultRowProps) {
+export function VaultRow({ vault, style, href, onClick }: VaultRowProps) {
+  const interactive = Boolean(onClick);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!onClick) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onClick(vault);
+    }
+  };
+
   return (
     <div
       style={style}
-      className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3"
+      onClick={interactive ? () => onClick?.(vault) : undefined}
+      onKeyDown={interactive ? handleKeyDown : undefined}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? `View details for ${vault.name}` : undefined}
+      className={`flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3 ${
+        interactive
+          ? "cursor-pointer transition-colors hover:border-slate-700 hover:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          : ""
+      }`}
     >
       <div className="flex flex-col">
         {href ? (
-          <PrefetchLink href={href} className="text-sm font-medium text-white hover:text-cyan-300">
+          <PrefetchLink
+            href={href}
+            onClick={(event) => event.stopPropagation()}
+            className="text-sm font-medium text-white hover:text-cyan-300"
+          >
             {vault.name}
           </PrefetchLink>
         ) : (
